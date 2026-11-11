@@ -1,5 +1,5 @@
 {
-  "name": "melonds-web",
+  "name": "juhyeonds",
   "version": "1.0.0",
   "description": "Nintendo DS emulator for the web, built on the melonDS core (WebAssembly), with optional server-side emulation and Google Drive sync.",
   "license": "GPL-3.0-or-later",

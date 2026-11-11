@@ -1,5 +1,5 @@
 @echo off
-rem melonDS Web - host for other devices (phones, Chromebooks) on your network or the internet.
+rem juhyeonDS - host for other devices (phones, Chromebooks) on your network or the internet.
 rem Optional:  start-server.bat --password 1234 --port 8080 --max-sessions 4
 chcp 65001 >nul
 cd /d "%~dp0"

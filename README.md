@@ -1,6 +1,6 @@
-# melonDS Web
+# juhyeonDS
 
-오픈소스 DS 에뮬레이터 [melonDS](https://melonds.kuribo64.net/) 1.1 코어를 WebAssembly로 빌드해 웹 브라우저에서 실행하는 프로그램입니다.
+웹 브라우저에서 실행하는 DS 에뮬레이터입니다. 오픈소스 DS 에뮬레이터 [melonDS](https://melonds.kuribo64.net/) 1.1 코어를 WebAssembly로 빌드해 사용합니다.
 
 - ROM 파일(.nds) 올리기, 세이브 파일(.sav) 올리기 — 세이브가 없으면 새 세이브를 만들어 시작
 - 세이브 데이터 다운로드, 브라우저 자동 보관
@@ -105,7 +105,7 @@ Google 정책상 Drive API를 쓰려면 사이트 운영자가 **OAuth 클라이
 동작 방식:
 
 - 가장 좁은 권한인 `drive.file`만 요청합니다. 이 앱은 **자신이 올린 파일만** 볼 수 있고, Drive의 다른 파일은 읽지 못합니다.
-- 파일은 Drive의 “melonDS Web” 폴더에 저장됩니다(`config.js`에서 이름 변경 가능).
+- 파일은 Drive의 “juhyeonDS” 폴더에 저장됩니다(`config.js`에서 이름 변경 가능).
 - Drive 웹사이트에서 직접 넣은 파일은 목록에 나타나지 않습니다. 사이트의 **ROM을 Drive에 올리기 / 세이브를 Drive에 올리기** 버튼으로 올려 주세요.
 - ROM을 고르면 Drive에서 같은 이름의 세이브(`게임이름.sav`)를 찾아 자동으로 선택합니다. 단, 이 브라우저의 자동 저장이 더 최신이면 그쪽을 씁니다.
 - 설정에서 “게임이 저장될 때마다 Drive에도 자동 저장”을 켤 수 있습니다. Google 로그인은 1시간마다 만료되므로, 만료 후에는 메뉴의 “세이브를 Drive에 저장”을 한 번 눌러 다시 로그인해야 합니다.

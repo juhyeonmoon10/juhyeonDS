@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# melonDS Web - 이 컴퓨터에서만 실행 (http://localhost:8080)
+# juhyeonDS - 이 컴퓨터에서만 실행 (http://localhost:8080)
 cd "$(dirname "$0")" || exit 1
 if command -v node >/dev/null 2>&1; then
   exec node server/server.js --port 8080 --open "$@"

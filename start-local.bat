@@ -1,5 +1,5 @@
 @echo off
-rem melonDS Web - run on this computer only (http://localhost:8080)
+rem juhyeonDS - run on this computer only (http://localhost:8080)
 chcp 65001 >nul
 cd /d "%~dp0"
 where node >nul 2>nul
