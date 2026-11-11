@@ -56,7 +56,7 @@ code {
 }
 .masthead h1 { margin: 0; font-size: 1.45rem; letter-spacing: -.01em; }
 .masthead p { margin: 0; color: var(--muted); font-size: .9rem; }
-.masthead .btn { margin-left: auto; }
+.masthead-actions { margin-left: auto; display: flex; gap: 8px; }
 
 .card {
   background: var(--panel);
@@ -234,6 +234,16 @@ details.card[open] > summary { margin-bottom: 10px; }
   cursor: pointer;
   z-index: 5;
 }
+
+.round.ff {
+  right: calc(60px + env(safe-area-inset-right));
+  font-size: 12px;
+  font-weight: 700;
+}
+.round.ff.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+#vpad.no-xy .vb.face.x, #vpad.no-xy .vb.face.y { display: none; }
+#vpad.no-xy .vb.face.a { top: 14%; right: 0; }
+#vpad.no-xy .vb.face.b { left: 8%; bottom: 10%; }
 
 #paused-badge {
   position: absolute;
