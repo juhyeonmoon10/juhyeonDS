@@ -1,8 +1,10 @@
 # juhyeonDS
 
-웹 브라우저에서 실행하는 DS 에뮬레이터입니다. 오픈소스 DS 에뮬레이터 [melonDS](https://melonds.kuribo64.net/) 1.1 코어를 WebAssembly로 빌드해 사용합니다.
+웹 브라우저에서 실행하는 DS · GBA 에뮬레이터입니다. DS는 [melonDS](https://melonds.kuribo64.net/) 1.1, GBA와 GB/GBC는 [mGBA](https://mgba.io/) 0.10.5 코어를 WebAssembly로 빌드해 사용합니다.
 
-- ROM 파일(.nds) 올리기, 세이브 파일(.sav) 올리기 — 세이브가 없으면 새 세이브를 만들어 시작
+- 지원 기종: Nintendo DS(.nds), Game Boy Advance(.gba), Game Boy / Color(.gb, .gbc) — 파일 확장자로 자동 구분
+- ROM 파일 올리기, 세이브 파일(.sav) 올리기 — 세이브가 없으면 새 세이브를 만들어 시작
+- 빨리 감기(F.F. 버튼 또는 Space/Tab), 앱으로 설치(PWA), 오프라인 실행
 - 세이브 데이터 다운로드, 브라우저 자동 보관
 - Google Drive 연동: ROM·세이브를 올려 두고 어느 기기에서든 불러오기, 게임 중 세이브를 Drive에 저장
 - 실행 위치 선택: **이 기기에서 실행**(브라우저가 에뮬레이션) / **서버에서 실행**(서버가 에뮬레이션, 화면·소리만 전송)
@@ -81,7 +83,7 @@ Cloudflare의 무료 터널을 써서 PC의 서버에 `https://….trycloudflare
 
 ## 2. 사용법
 
-1. **ROM 파일 올리기**로 `.nds` 파일을 고릅니다(`.nds`가 든 `.zip`도 가능, 끌어다 놓기도 가능).
+1. **ROM 파일 올리기**로 `.nds`, `.gba`, `.gb`, `.gbc` 파일을 고릅니다(이 파일이 든 `.zip`도 가능, 끌어다 놓기도 가능).
 2. 이어서 할 세이브가 있으면 **세이브 파일 올리기**로 `.sav`를 고릅니다. 없으면 건너뜁니다.
 3. 실행 위치를 고르고 **게임 시작**을 누릅니다.
 
@@ -104,10 +106,21 @@ Cloudflare의 무료 터널을 써서 PC의 서버에 `https://….trycloudflare
 | L / R | Q / W | L1 / R1 |
 | START / SELECT | Enter / Shift | Start / Select |
 | 터치스크린 | 아래 화면을 마우스로 클릭·드래그 | — |
+| 빨리 감기(3배속) | Space 또는 Tab을 누르는 동안 | 화면의 F.F. 버튼 |
 
 터치 기기에서는 가상 패드가 자동으로 표시됩니다(설정에서 끄거나 항상 켤 수 있습니다).
 
 ---
+
+### 앱으로 설치하기 (크롬북, PC, 휴대폰)
+
+`https://` 주소(GitHub Pages 등)나 `localhost`에서 열면 앱으로 설치할 수 있습니다.
+
+- **크롬북 · PC의 Chrome/Edge**: 홈 화면 오른쪽 위의 **⬇ 앱으로 설치** 버튼을 누르거나, 주소창 오른쪽의 설치 아이콘을 누릅니다. 설치하면 런처(앱 목록)에 juhyeonDS가 생기고 주소창 없는 독립 창으로 열립니다.
+- **Android Chrome**: 메뉴(⋮) → “앱 설치” 또는 “홈 화면에 추가”.
+- **iPhone Safari**: 공유 버튼 → “홈 화면에 추가”.
+
+한 번 연 뒤에는 인터넷이 없어도 “이 기기에서 실행”으로 게임을 할 수 있습니다. 설치한 앱에서는 파일 관리자에서 `.nds`/`.gba` 파일을 juhyeonDS로 바로 열 수도 있습니다(Chrome 계열).
 
 ## 3. Google Drive 연동 설정
 
@@ -156,7 +169,7 @@ Google 정책상 Drive API를 쓰려면 사이트 운영자가 **OAuth 클라이
 
 ## 6. 알아둘 점 (제한 사항)
 
-- DS 모드만 지원합니다(DSi 전용 소프트웨어 불가). JIT 없이 인터프리터 + 소프트웨어 렌더러로 동작하므로 속도는 기기 성능에 좌우됩니다.
+- DS는 DS 모드만 지원합니다(DSi 전용 소프트웨어 불가). GBA는 내장 BIOS(HLE)로 동작합니다. JIT 없이 인터프리터 + 소프트웨어 렌더러로 동작하므로 속도는 기기 성능에 좌우됩니다.
 - Wi-Fi·로컬 통신, 마이크, GBA 슬롯, 치트, 세이브 스테이트는 지원하지 않습니다.
 - 가장 큰 ROM(256~512MB)은 메모리가 적은 휴대폰 브라우저에서 불러오지 못할 수 있습니다.
 - iPhone의 Safari는 전체 화면 API를 지원하지 않습니다. “홈 화면에 추가”로 열면 주소창 없이 쓸 수 있습니다.
@@ -172,7 +185,8 @@ public/            웹사이트 (정적 호스팅 시 이 폴더만 올리면 �
   config.js        Google 클라이언트 ID, 서버 주소 설정
   core/            빌드된 melonDS 코어 (melonds.js, melonds.wasm)
 server/            Node 서버 (정적 호스팅 + 서버 에뮬레이션)
-core/              코어 빌드 소스 (glue.cpp, CMakeLists.txt, build.sh)
+core/              melonDS(DS) 코어 빌드 소스 (glue.cpp, CMakeLists.txt, build.sh)
+core-gba/          mGBA(GBA·GB) 코어 빌드 소스 (glue.c, CMakeLists.txt, build.sh)
 start-local.*      내 컴퓨터에서 실행
 start-server.*     같은 네트워크의 다른 기기에 호스팅
 start-server-anywhere.*  다른 네트워크에서도 접속 (Cloudflare 터널)
@@ -185,6 +199,7 @@ start-server-anywhere.*  다른 네트워크에서도 접속 (Cloudflare 터널)
 ```bash
 source /path/to/emsdk/emsdk_env.sh
 bash core/build.sh        # melonDS 1.1 소스를 받아 public/core/ 에 빌드
+bash core-gba/build.sh    # mGBA 0.10.5 소스를 받아 public/core/ 에 빌드
 ```
 
 ## 9. 라이선스
@@ -192,6 +207,8 @@ bash core/build.sh        # melonDS 1.1 소스를 받아 public/core/ 에 빌드
 이 프로그램은 melonDS(Copyright 2016-2025 melonDS team)를 기반으로 하며 **GNU GPL v3 (또는 이후 버전)** 으로 배포됩니다. 전문은 `LICENSE`에 있습니다.
 배포본에 포함된 `public/core/melonds.wasm`은 수정하지 않은 melonDS 1.1 소스(https://github.com/melonDS-emu/melonDS, 태그 `1.1`)와 `core/glue.cpp`로 빌드한 것입니다. 이 프로그램을 다른 사람에게 배포하거나 사이트로 공개할 때는 GPLv3에 따라 소스 코드(이 폴더 전체)를 함께 제공해야 합니다.
 
-포함된 서드파티: melonDS와 그 내장 라이브러리(teakra, FatFs, tiny-AES-c, xxHash, blip-buf 등 — 각 라이선스는 melonDS 소스 참고), [fflate](https://github.com/101arrowz/fflate) (MIT), [ws](https://github.com/websockets/ws) (MIT).
+`public/core/mgba.wasm`은 수정하지 않은 mGBA 0.10.5 소스(https://github.com/mgba-emu/mgba, 태그 `0.10.5`, Copyright (c) 2013-2024 Jeffrey Pfau)와 `core-gba/glue.c`로 빌드한 것이며, mGBA는 Mozilla Public License 2.0으로 배포됩니다(전문: `core-gba/MGBA-LICENSE.txt`).
+
+포함된 서드파티: mGBA, melonDS와 그 내장 라이브러리(teakra, FatFs, tiny-AES-c, xxHash, blip-buf 등 — 각 라이선스는 melonDS 소스 참고), [fflate](https://github.com/101arrowz/fflate) (MIT), [ws](https://github.com/websockets/ws) (MIT).
 
 Nintendo와 관련이 없는 비공식 프로그램입니다. Nintendo DS는 Nintendo의 상표입니다.
