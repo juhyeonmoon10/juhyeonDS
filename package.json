@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "description": "Nintendo DS emulator for the web, built on the melonDS core (WebAssembly), with optional server-side emulation and Google Drive sync.",
   "license": "GPL-3.0-or-later",
+  "homepage": "https://juhyeonmoon10.github.io/juhyeonDS/public/",
   "private": true,
   "scripts": {
     "start": "node server/server.js",
     "start:public": "node server/server.js --public",
+    "start:tunnel": "node server/server.js --public --tunnel",
     "build:core": "bash core/build.sh"
   },
   "engines": {

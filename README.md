@@ -48,6 +48,27 @@ start-server --password 1234      서버 에뮬레이션에 비밀번호 걸기
 
 환경 변수 `PORT`, `HOST`, `PASSWORD`, `MAX_SESSIONS`, `TLS_CERT`, `TLS_KEY`도 같은 역할을 합니다.
 
+### 다른 네트워크에서 서버 쓰기 (모바일 데이터, 다른 와이파이)
+
+| 운영체제 | 실행 |
+| --- | --- |
+| Windows | `start-server-anywhere.bat` |
+| macOS / Linux | `./start-server-anywhere.sh` |
+
+Cloudflare의 무료 터널을 써서 PC의 서버에 `https://….trycloudflare.com` 형태의 공개 주소를 붙입니다. 공유기 설정이나 계정이 필요 없습니다. 처음 실행할 때 터널 프로그램 `cloudflared`(Cloudflare 공식 배포판, 약 55MB)를 `tools/` 폴더에 내려받습니다.
+
+실행하면 주소가 두 개 표시됩니다.
+
+- **어디서나 접속**: `https://….trycloudflare.com` — 이 주소로 바로 접속하면 됩니다.
+- **Google Drive까지 쓰려면**: `https://juhyeonmoon10.github.io/juhyeonDS/public/?server=https://….trycloudflare.com` — GitHub Pages 사이트가 열리면서 서버가 자동으로 연결됩니다. 홈 화면의 “서버 주소” 칸에 터널 주소를 직접 넣어도 같습니다.
+
+알아둘 점:
+
+- 터널 주소는 서버를 켤 때마다 바뀝니다.
+- 주소를 아는 사람은 누구나 접속해 PC의 CPU를 쓸 수 있습니다. `--password 1234`로 비밀번호를 걸 수 있습니다.
+- 게임 파일을 인터넷으로 올려야 하므로 큰 ROM은 시작이 오래 걸리고, 화면 전송량이 큰 3D 게임은 모바일 데이터를 많이 씁니다. 설정에서 30fps 전송을 고르면 줄어듭니다.
+- PC가 켜져 있고 검은 창이 떠 있는 동안에만 동작합니다.
+
 ### 인터넷에 올리기
 
 - **정적 호스팅** (GitHub Pages, Netlify, Cloudflare Pages 등): `public/` 폴더 안의 파일만 올리면 됩니다. “이 기기에서 실행” 모드와 Google Drive가 동작합니다.
@@ -153,7 +174,8 @@ public/            웹사이트 (정적 호스팅 시 이 폴더만 올리면 �
 server/            Node 서버 (정적 호스팅 + 서버 에뮬레이션)
 core/              코어 빌드 소스 (glue.cpp, CMakeLists.txt, build.sh)
 start-local.*      내 컴퓨터에서 실행
-start-server.*     다른 기기에 호스팅
+start-server.*     같은 네트워크의 다른 기기에 호스팅
+start-server-anywhere.*  다른 네트워크에서도 접속 (Cloudflare 터널)
 ```
 
 ## 8. 코어 다시 빌드하기
