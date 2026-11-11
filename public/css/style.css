@@ -360,6 +360,11 @@ dialog.sheet p { margin: 8px 0; }
 .menu-grid .btn:first-child, .menu-grid .btn:last-child { grid-column: 1 / -1; }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
+.bios-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.bios-row .pill { margin-right: auto; }
+#rom-warning { margin: 10px 0 0; }
+#hud.slow { color: #ffd27a; }
+
 .keys dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0 0 8px; font-size: .9rem; }
 .keys dt { font-weight: 700; }
 .keys dd { margin: 0; color: var(--muted); }
