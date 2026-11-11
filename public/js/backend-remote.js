@@ -1,5 +1,5 @@
 /*
- * melonDS Web - backend that emulates on the server and streams video/audio over WebSocket.
+ * juhyeonDS - backend that emulates on the server and streams video/audio over WebSocket.
  * Licensed under the GNU General Public License v3 or later.
  */
 
@@ -27,7 +27,7 @@ export async function probeServer() {
     const res = await fetch(serverBaseUrl() + '/api/info', { signal: controller.signal, cache: 'no-store' });
     if (!res.ok) return null;
     const info = await res.json();
-    return info && info.name === 'melonds-web' ? info : null;
+    return info && info.name === 'juhyeonds' ? info : null;
   } catch (err) {
     return null;
   } finally {

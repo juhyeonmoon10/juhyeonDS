@@ -1,5 +1,5 @@
 /*
- * melonDS Web - backend that emulates inside this browser (Web Worker + WebAssembly).
+ * juhyeonDS - backend that emulates inside this browser (Web Worker + WebAssembly).
  * Licensed under the GNU General Public License v3 or later.
  */
 

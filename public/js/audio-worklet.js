@@ -1,5 +1,5 @@
 /*
- * melonDS Web - audio output worklet.
+ * juhyeonDS - audio output worklet.
  * Keeps a small jitter buffer and nudges the playback rate by up to 1% so the emulator's
  * clock and the sound card's clock never drift apart audibly.
  * Licensed under the GNU General Public License v3 or later.

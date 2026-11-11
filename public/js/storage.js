@@ -1,9 +1,9 @@
 /*
- * melonDS Web - save data kept in this browser (IndexedDB) and user settings (localStorage).
+ * juhyeonDS - save data kept in this browser (IndexedDB) and user settings (localStorage).
  * Licensed under the GNU General Public License v3 or later.
  */
 
-const DB_NAME = 'melonds-web';
+const DB_NAME = 'juhyeonds';
 const STORE = 'saves';
 let dbPromise = null;
 
@@ -70,7 +70,7 @@ export function requestPersistence() {
 }
 
 // ------------------------------------------------------------ settings
-const SETTINGS_KEY = 'melonds-web.settings';
+const SETTINGS_KEY = 'juhyeonds.settings';
 const DEFAULTS = {
   vpad: 'auto',
   layout: 'auto',

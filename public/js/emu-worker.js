@@ -1,5 +1,5 @@
 /*
- * melonDS Web - browser worker that runs the WebAssembly core off the main thread.
+ * juhyeonDS - browser worker that runs the WebAssembly core off the main thread.
  * Licensed under the GNU General Public License v3 or later.
  */
 'use strict';

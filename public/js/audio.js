@@ -1,5 +1,5 @@
 /*
- * melonDS Web - audio output.
+ * juhyeonDS - audio output.
  * Uses an AudioWorklet where available; falls back to ScriptProcessorNode on pages that are
  * not a secure context (plain http:// on a LAN address), where worklets do not exist.
  * Licensed under the GNU General Public License v3 or later.

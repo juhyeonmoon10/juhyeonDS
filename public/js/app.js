@@ -1,5 +1,5 @@
 /*
- * melonDS Web - user interface.
+ * juhyeonDS - user interface.
  * Licensed under the GNU General Public License v3 or later.
  */
 import { LocalBackend } from './backend-local.js';

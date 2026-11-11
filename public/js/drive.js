@@ -1,5 +1,5 @@
 /*
- * melonDS Web - Google Drive integration (Google Identity Services + Drive REST API v3).
+ * juhyeonDS - Google Drive integration (Google Identity Services + Drive REST API v3).
  *
  * Uses the narrow "drive.file" scope: the app can only see files it created itself,
  * all kept in one folder. Nothing else in the user's Drive is readable.
@@ -40,7 +40,7 @@ export class DriveError extends Error {
 
 export class Drive {
   constructor(folderName) {
-    this.folderName = folderName || 'melonDS Web';
+    this.folderName = folderName || 'juhyeonDS';
     this.clientId = '';
     this.tokenClient = null;
     this.token = '';

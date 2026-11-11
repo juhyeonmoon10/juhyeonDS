@@ -1,5 +1,5 @@
 /*
- * melonDS Web - keyboard, gamepad, on-screen pad and touch-screen input.
+ * juhyeonDS - keyboard, gamepad, on-screen pad and touch-screen input.
  * Licensed under the GNU General Public License v3 or later.
  */
 

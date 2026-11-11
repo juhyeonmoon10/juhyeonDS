@@ -1,5 +1,5 @@
 /*
- * melonDS Web - emulation loop shared by the browser worker and the Node server session.
+ * juhyeonDS - emulation loop shared by the browser worker and the Node server session.
  * Licensed under the GNU General Public License v3 or later.
  */
 (function (root, factory) {
