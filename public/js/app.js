@@ -340,20 +340,59 @@ function setMode(mode) {
   $('server-password-row').hidden = !(mode === 'server' && state.serverInfo && state.serverInfo.passwordRequired);
 }
 
+/** Normalises what the user typed into an origin such as https://host:port, or '' if unusable. */
+function cleanServerUrl(text) {
+  let value = String(text || '').trim();
+  if (!value) return '';
+  if (!/^https?:\/\//i.test(value)) value = 'https://' + value;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : '';
+  } catch (err) {
+    return '';
+  }
+}
+
+const defaultServerUrl = config.serverUrl || '';
+function applyServerUrl() {
+  // backend-remote.js reads the address from the shared config object.
+  window.MELONDS_CONFIG = Object.assign(window.MELONDS_CONFIG || {}, { serverUrl: settings.serverUrl || defaultServerUrl });
+}
+
 async function initServerMode() {
+  applyServerUrl();
+  const custom = settings.serverUrl || '';
+  const status = $('server-url-status');
+  $('server-url').value = custom;
+  $('mode-server-desc').textContent = '서버 확인 중…';
+  status.className = 'hint';
+  status.textContent = custom ? '서버에 연결하는 중…' : '';
+
   const info = await probeServer();
   state.serverInfo = info;
   const button = $('mode-server');
   const desc = $('mode-server-desc');
+  if (custom) {
+    const insecure = location.protocol === 'https:' && custom.startsWith('http://') && !/^http:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(custom);
+    if (info && info.emulation) {
+      status.className = 'hint ok';
+      status.textContent = `연결됨: ${custom}`;
+    } else {
+      status.className = 'hint bad';
+      status.textContent = insecure
+        ? '이 페이지는 https라서 http:// 서버에는 연결할 수 없습니다. https:// 로 시작하는 서버 주소(터널 주소)를 입력하세요.'
+        : '이 주소의 서버에 연결하지 못했습니다. 서버가 켜져 있는지, 주소가 맞는지 확인하세요. (터널 주소는 서버를 켤 때마다 바뀝니다)';
+    }
+  }
   if (info && info.emulation) {
     button.disabled = false;
     desc.textContent = '서버가 에뮬레이션하고 화면만 받아옵니다. 성능이 낮은 기기에 유리하며, ROM이 서버로 전송됩니다.';
-    if (settings.mode === 'server') setMode('server');
+    if (settings.mode === 'server' || custom) setMode('server');
   } else {
     button.disabled = true;
     desc.textContent = info
       ? '이 서버는 에뮬레이션 기능이 꺼져 있습니다.'
-      : '에뮬레이션 서버를 찾지 못했습니다. start-server로 실행한 주소에서 사용할 수 있습니다.';
+      : '연결된 서버가 없습니다. 아래에 서버 주소를 입력하거나, start-server로 실행한 주소로 접속하세요.';
     setMode('local');
   }
 }
@@ -1015,6 +1054,24 @@ function bindUI() {
   }
   $('btn-start').addEventListener('click', startGame);
   $('btn-settings-home').addEventListener('click', openSettings);
+  const saveServerUrl = () => {
+    const raw = $('server-url').value;
+    const cleaned = cleanServerUrl(raw);
+    if (raw.trim() && !cleaned) {
+      toast('서버 주소가 올바르지 않습니다. 예: https://xxxx.trycloudflare.com', 'error');
+      return;
+    }
+    settings.serverUrl = cleaned;
+    storage.saveSettings(settings);
+    initServerMode();
+  };
+  $('btn-server-url').addEventListener('click', saveServerUrl);
+  $('server-url').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveServerUrl();
+    }
+  });
   $('mode-local').addEventListener('click', () => setMode('local'));
   $('mode-server').addEventListener('click', () => setMode('server'));
 
@@ -1181,6 +1238,22 @@ if (location.protocol === 'file:') {
     '실행 스크립트로 열어 주세요',
     '이 페이지는 파일을 직접 더블클릭해서 열면 동작하지 않습니다. 폴더의 start-local (Windows는 start-local.bat)을 실행한 뒤 표시되는 http://localhost 주소로 접속하세요.'
   );
+}
+
+// A link such as …/?server=https://xxxx.trycloudflare.com connects this page to that server.
+{
+  const params = new URLSearchParams(location.search);
+  if (params.has('server')) {
+    const cleaned = cleanServerUrl(params.get('server'));
+    if (cleaned) {
+      settings.serverUrl = cleaned;
+      settings.mode = 'server';
+      storage.saveSettings(settings);
+    }
+    params.delete('server');
+    const query = params.toString();
+    history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + location.hash);
+  }
 }
 
 bindUI();

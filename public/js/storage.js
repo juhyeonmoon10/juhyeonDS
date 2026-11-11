@@ -100,6 +100,7 @@ const DEFAULTS = {
   driveAutoSync: false,
   mode: 'local',
   googleClientId: '',
+  serverUrl: '',
 };
 
 export function loadSettings() {
