@@ -1,0 +1,25 @@
+{
+  "name": "juhyeonDS",
+  "short_name": "juhyeonDS",
+  "description": "브라우저에서 실행하는 DS · GBA 에뮬레이터",
+  "lang": "ko",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#14181c",
+  "theme_color": "#14181c",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "file_handlers": [
+    {
+      "action": "./",
+      "accept": { "application/octet-stream": [".nds", ".gba", ".gb", ".gbc"] }
+    }
+  ]
+}
