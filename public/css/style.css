@@ -241,7 +241,7 @@ details.card[open] > summary { margin-bottom: 10px; }
 
 .round.ff {
   right: calc(60px + env(safe-area-inset-right));
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
 }
 .round.ff.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
