@@ -43,6 +43,14 @@ u32 g_saveDirty = 0;
 bool g_stopped = false;
 int g_stopReason = 0;
 int g_logLevel = 2; // warnings and errors only
+
+// Optional console BIOS images supplied by the user (needed for encrypted ROM dumps).
+std::unique_ptr<ARM9BIOSImage> g_bios9;
+std::unique_ptr<ARM7BIOSImage> g_bios7;
+
+// Undefined-instruction faults since load. Retail games never execute these on purpose,
+// so a growing count means the game has crashed rather than being busy loading.
+u32 g_faults = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +143,11 @@ u64 FileLength(FileHandle* file)
 
 void Log(LogLevel level, const char* fmt, ...)
 {
+    if (fmt && !strncmp(fmt, "undefined ", 10))
+    {
+        // A crashed game repeats this every instruction; count it, print only the first few.
+        if (++g_faults > 4) return;
+    }
     if ((int)level < g_logLevel) return;
     va_list args;
     va_start(args, fmt);
@@ -248,6 +261,7 @@ void ConvertFramebuffer()
 
 void Boot()
 {
+    g_faults = 0;
     g_nds->Reset();
     ApplyDateTime();
     if (g_nds->NeedsDirectBoot())
@@ -279,12 +293,28 @@ EMSCRIPTEN_KEEPALIVE void mds_set_datetime(int year, int month, int day, int hou
 
 EMSCRIPTEN_KEEPALIVE void mds_set_log_level(int level) { g_logLevel = level; }
 
+// Installs user-supplied console BIOS images for the next mds_load (both are copied).
+// arm9 must be 4096 bytes and arm7 16384 bytes. Pass null pointers to go back to FreeBIOS.
+EMSCRIPTEN_KEEPALIVE void mds_set_bios(const u8* arm9, const u8* arm7)
+{
+    g_bios9.reset();
+    g_bios7.reset();
+    if (!arm9 || !arm7) return;
+    g_bios9 = std::make_unique<ARM9BIOSImage>();
+    g_bios7 = std::make_unique<ARM7BIOSImage>();
+    memcpy(g_bios9->data(), arm9, ARM9BIOSSize);
+    memcpy(g_bios7->data(), arm7, ARM7BIOSSize);
+}
+
+EMSCRIPTEN_KEEPALIVE u32 mds_fault_count() { return g_faults; }
+
 // Takes ownership of `rom` (allocated with mds_alloc). `save` may be null and is copied.
 // Returns 0 on success, a negative value on failure.
 EMSCRIPTEN_KEEPALIVE int mds_load(u8* rom, u32 romlen, const u8* save, u32 savelen)
 {
     g_nds.reset();
     g_saveDirty = 0;
+    g_faults = 0;
     memset(g_fb, 0, sizeof(g_fb));
 
     std::unique_ptr<u8[]> romdata(rom);
@@ -297,6 +327,13 @@ EMSCRIPTEN_KEEPALIVE int mds_load(u8* rom, u32 romlen, const u8* save, u32 savel
         const u64 arm7off = rd32(0x30), arm7size = rd32(0x3C);
         if (arm9size == 0 || arm9off + arm9size > romlen || arm7off + arm7size > romlen)
             return -3;
+
+        // Retail dumps come in two forms. In a decrypted dump the secure area starts with
+        // the E7FFDEFF marker. An encrypted dump can only be decrypted with the key table
+        // inside the console's own ARM7 BIOS, which the built-in FreeBIOS does not contain.
+        const bool hasSecureArea = arm9off >= 0x4000 && arm9off < 0x8000 && memcmp(rom + 0xC, "####", 4) != 0;
+        if (hasSecureArea && rd32((u32)arm9off) != 0xE7FFDEFFu && !(g_bios9 && g_bios7))
+            return -4;
     }
 
     auto cart = NDSCart::ParseROM(std::move(romdata), romlen, nullptr, std::nullopt);
@@ -305,6 +342,11 @@ EMSCRIPTEN_KEEPALIVE int mds_load(u8* rom, u32 romlen, const u8* save, u32 savel
         cart->SetSaveMemory(save, savelen);
 
     NDSArgs args;
+    if (g_bios9 && g_bios7)
+    {
+        args.ARM9BIOS = std::make_unique<ARM9BIOSImage>(*g_bios9);
+        args.ARM7BIOS = std::make_unique<ARM7BIOSImage>(*g_bios7);
+    }
     args.JIT = std::nullopt;
     args.OutputSampleRate = g_sampleRate;
     args.Interpolation = AudioInterpolation::Linear;
