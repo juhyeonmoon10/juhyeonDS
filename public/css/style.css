@@ -59,6 +59,7 @@ code {
 .masthead-actions { margin-left: auto; display: flex; gap: 8px; }
 
 .card {
+  min-width: 0;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -157,7 +158,8 @@ code {
 .seg-item:disabled { opacity: .55; cursor: not-allowed; }
 
 .drive-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }
-.drive-lists { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 10px; }
+.drive-lists { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-bottom: 10px; }
+.drive-lists > div { min-width: 0; }
 
 .file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow: auto; }
 .file-list li {
@@ -170,7 +172,9 @@ code {
   padding: 6px 6px 6px 10px;
 }
 .file-list li.sel { border-color: var(--accent); }
-.file-list .fl-main { min-width: 0; flex: 1; }
+.file-list li { flex-wrap: wrap; flex-shrink: 0; }
+.file-list .fl-main { min-width: 0; flex: 1 1 150px; }
+.file-list li > .btn { flex: none; }
 .file-list .fl-name { display: block; font-size: .9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-list .fl-meta { display: block; font-size: .75rem; color: var(--muted); }
 .file-list .empty { background: transparent; border-style: dashed; color: var(--muted); font-size: .85rem; padding: 10px; }
@@ -461,7 +465,13 @@ body.playing #toasts { bottom: auto; top: calc(60px + env(safe-area-inset-top));
 @media (max-width: 560px) {
   .pick { flex-wrap: wrap; }
   .pick > .btn:first-child { flex: 1 1 100%; }
-  .seg, .drive-lists { grid-template-columns: 1fr; }
+  .seg, .drive-lists { grid-template-columns: minmax(0, 1fr); }
+  /* File rows: full name on its own line, buttons underneath. */
+  .file-list .fl-main { flex-basis: 100%; }
+  .file-list .fl-name { white-space: normal; overflow-wrap: anywhere; }
+  .file-list li { padding: 8px 10px; }
+  .file-list { max-height: 360px; }
+  .file-list li > .btn:first-of-type { margin-left: auto; }
   .masthead p { display: none; }
 }
 
