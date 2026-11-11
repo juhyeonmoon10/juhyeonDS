@@ -5,6 +5,7 @@
  *   node server/server.js [--port 8080] [--host 127.0.0.1] [--public] [--password SECRET] [--open]
  *                         [--max-sessions 4] [--no-emulation] [--cert cert.pem --key key.pem]
  *                         [--tunnel]   make the server reachable from other networks
+ *                         [--rom-cache-mb 8192]  disk space for remembered game files (0 = off)
  *
  * Environment variables PORT, HOST, PASSWORD, MAX_SESSIONS, TLS_CERT, TLS_KEY work too.
  * Licensed under the GNU General Public License v3 or later.
@@ -55,6 +56,9 @@ const TLS_CERT = args.cert || process.env.TLS_CERT || '';
 const TLS_KEY = args.key || process.env.TLS_KEY || '';
 const MAX_ROM_BYTES = 512 * 1024 * 1024;
 const MAX_SAVE_BYTES = 16 * 1024 * 1024;
+const { RomCache, HASH_PATTERN } = require('./rom-cache');
+const ROM_CACHE_MB = args['no-rom-cache'] ? 0 : parseInt(args['rom-cache-mb'] || process.env.ROM_CACHE_MB || '8192', 10) || 0;
+const romCache = new RomCache(path.join(__dirname, '..', 'rom-cache'), ROM_CACHE_MB * 1024 * 1024);
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
 const MIME = {
@@ -173,6 +177,8 @@ class Session {
     this.saveBytes = 0;
     this.bios9 = null;
     this.bios7 = null;
+    this.haveRom = false;
+    this.launching = false;
     this.videoPaused = false;
     this.awaitingKeyframe = false;
     this.closed = false;
@@ -221,12 +227,15 @@ class Session {
           fpsDivider: msg.fpsDivider === 2 ? 2 : 1,
           bios: !!msg.bios,
           system: ['nds', 'gba', 'gb'].includes(msg.system) ? msg.system : 'nds',
+          romHash: HASH_PATTERN.test(String(msg.romHash)) ? String(msg.romHash) : '',
         };
-        this.send({ t: 'upload' });
+        // A game this server already holds does not need to be sent again.
+        this.haveRom = !!this.expect.romHash && romCache.has(this.expect.romHash, romSize);
+        this.send({ t: 'upload', haveRom: this.haveRom });
         break;
       }
       case 'go':
-        this.launch();
+        this.launch().catch((err) => this.fail(String(err.message || err)));
         break;
       case 'pause':
       case 'resume':
@@ -267,6 +276,7 @@ class Session {
     }
     if (!this.expect || this.worker) return;
     if (type === MSG_ROM_CHUNK) {
+      if (this.haveRom) return;
       this.romBytes += buf.length - 1;
       if (this.romBytes > this.expect.romSize) throw new Error('ROM 데이터가 예고된 크기보다 큽니다');
       this.romChunks.push(buf.subarray(1));
@@ -281,10 +291,11 @@ class Session {
     }
   }
 
-  launch() {
+  async launch() {
     if (!this.expect) throw new Error('start 메시지가 먼저 필요합니다');
-    if (this.worker) return;
-    if (this.romBytes !== this.expect.romSize) throw new Error('ROM 업로드가 완료되지 않았습니다');
+    if (this.worker || this.launching) return;
+    this.launching = true;
+    if (!this.haveRom && this.romBytes !== this.expect.romSize) throw new Error('ROM 업로드가 완료되지 않았습니다');
     if (this.saveBytes !== this.expect.saveSize) throw new Error('세이브 업로드가 완료되지 않았습니다');
     if (this.expect.bios && !(this.bios9 && this.bios7)) throw new Error('BIOS 업로드가 완료되지 않았습니다');
 
@@ -297,10 +308,19 @@ class Session {
       }
       return out.buffer;
     };
-    const rom = toArrayBuffer(this.romChunks, this.romBytes);
+    let rom;
+    if (this.haveRom) {
+      rom = await romCache.read(this.expect.romHash);
+    } else {
+      rom = toArrayBuffer(this.romChunks, this.romBytes);
+      // Remember it for next time. A copy is stored because `rom` is handed to the worker.
+      const copy = rom.slice(0);
+      romCache.store(copy).catch(() => {});
+    }
     const save = this.saveBytes ? toArrayBuffer(this.saveChunks, this.saveBytes) : null;
     this.romChunks = [];
     this.saveChunks = [];
+    if (this.closed) return;
 
     this.worker = new Worker(path.join(__dirname, 'session-worker.js'));
     this.worker.on('message', (m) => this.onWorkerMessage(m));
@@ -439,6 +459,10 @@ server.listen(PORT, HOST, () => {
     }
   } else {
     console.log('  (다른 기기에서 접속하려면 --public 옵션으로 실행하세요)');
+  }
+  if (EMULATION && romCache.enabled) {
+    const cached = romCache.summary();
+    console.log(`  보관 중인 게임:  ${cached.files}개 (${(cached.bytes / 1048576).toFixed(0)}MB, 한도 ${ROM_CACHE_MB}MB) - rom-cache 폴더`);
   }
   console.log(`  서버 에뮬레이션: ${EMULATION ? `켜짐 (동시 ${MAX_SESSIONS}세션${PASSWORD ? ', 비밀번호 사용' : ''})` : '꺼짐'}`);
   console.log('  종료하려면 Ctrl+C');
