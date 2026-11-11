@@ -2,8 +2,9 @@
 window.MELONDS_CONFIG = {
   // Google Drive 연동에 쓰는 OAuth 클라이언트 ID.
   // 비워 두면 "Google Drive 연결"을 누를 때 입력 창이 나타나고, 입력값은 그 브라우저에만 저장됩니다.
-  // 예: "1234567890-abcdefg.apps.googleusercontent.com"
-  googleClientId: "",
+  // 이 ID는 공개되어도 되는 값입니다(비밀번호가 아님). 등록된 주소에서만 동작합니다:
+  //   https://juhyeonmoon10.github.io , http://localhost:8080
+  googleClientId: "239426119277-m6mhqsm23b1jqpmpuefisdr0osu0jehm.apps.googleusercontent.com",
 
   // Drive에 만들어지는 폴더 이름.
   driveFolderName: "juhyeonDS",
