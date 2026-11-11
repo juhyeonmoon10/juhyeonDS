@@ -360,6 +360,14 @@ dialog.sheet p { margin: 8px 0; }
 .menu-grid .btn:first-child, .menu-grid .btn:last-child { grid-column: 1 / -1; }
 .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
+.server-url { margin-top: 12px; }
+.server-url em { color: var(--muted); font-style: normal; font-size: .85em; }
+.server-url-row { display: flex; gap: 8px; }
+.server-url-row input { flex: 1; }
+#server-url-status { margin-top: 6px; }
+#server-url-status.ok { color: var(--accent); }
+#server-url-status.bad { color: var(--danger); }
+
 .bios-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .bios-row .pill { margin-right: auto; }
 #rom-warning { margin: 10px 0 0; }
