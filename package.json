@@ -1,0 +1,18 @@
+{
+  "name": "melonds-web",
+  "version": "1.0.0",
+  "description": "Nintendo DS emulator for the web, built on the melonDS core (WebAssembly), with optional server-side emulation and Google Drive sync.",
+  "license": "GPL-3.0-or-later",
+  "private": true,
+  "scripts": {
+    "start": "node server/server.js",
+    "start:public": "node server/server.js --public",
+    "build:core": "bash core/build.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
