@@ -36,11 +36,10 @@ export class AudioPlayer {
       this.gain.connect(this.ctx.destination);
     }
     if (this.ctx.state === 'suspended') {
-      try {
-        await this.ctx.resume();
-      } catch (err) {
-        /* will retry on the next gesture */
-      }
+      // Without a user gesture the browser leaves this promise pending forever, so never wait
+      // on it for long: the game starts silent and sound comes on with the next tap or key.
+      const resumed = this.ctx.resume().catch(() => {});
+      await Promise.race([resumed, new Promise((resolve) => setTimeout(resolve, 300))]);
     }
 
     this.disconnectNode();
@@ -147,11 +146,7 @@ export class AudioPlayer {
 
   async resume() {
     if (this.ctx && this.ctx.state !== 'running') {
-      try {
-        await this.ctx.resume();
-      } catch (err) {
-        /* ignored */
-      }
+      this.ctx.resume().catch(() => {});
     }
   }
 
