@@ -3,7 +3,6 @@
  * Licensed under the GNU General Public License v3 or later.
  */
 
-const FB_BYTES = 256 * 192 * 2 * 4;
 const MSG_ROM_CHUNK = 0x01;
 const MSG_SAVE_CHUNK = 0x02;
 const MSG_BIOS9 = 0x03;
@@ -44,10 +43,11 @@ export class RemoteBackend {
     this.ws = null;
     this.closedByUs = false;
     this.started = false;
-    this.frame = new Uint8ClampedArray(FB_BYTES);
-    this.frame32 = new Uint32Array(this.frame.buffer);
-    this.scratch = new Uint8Array(FB_BYTES);
-    this.scratch32 = new Uint32Array(this.scratch.buffer);
+    this.fbBytes = 0; // set once the server reports the picture size
+    this.frame = null;
+    this.frame32 = null;
+    this.scratch = null;
+    this.scratch32 = null;
     this.haveKeyframe = false;
     this.saveWaiters = [];
     this.lastInput = '';
@@ -89,6 +89,7 @@ export class RemoteBackend {
         ws.send(
           JSON.stringify({
             t: 'start',
+            system: opts.system,
             romSize: opts.rom.size,
             saveSize: opts.save ? opts.save.length : 0,
             bios: !!opts.bios,
@@ -119,8 +120,13 @@ export class RemoteBackend {
             progress('게임 시작!', 1);
             settled = true;
             this.started = true;
+            this.fbBytes = m.width * m.height * m.screens * 4;
+            this.frame = new Uint8ClampedArray(this.fbBytes);
+            this.frame32 = new Uint32Array(this.frame.buffer);
+            this.scratch = new Uint8Array(this.fbBytes);
+            this.scratch32 = new Uint32Array(this.scratch.buffer);
             this.pingTimer = setInterval(() => this.sendPing(), 2000);
-            resolve({ saveLen: m.saveLen });
+            resolve({ saveLen: m.saveLen, width: m.width, height: m.height, screens: m.screens });
             break;
           case 'stats':
             this.lastStats = { fps: m.fps, load: m.load };
@@ -201,6 +207,7 @@ export class RemoteBackend {
     const flags = head[1];
 
     if (type === MSG_VIDEO) {
+      if (!this.frame) return;
       let out;
       try {
         out = window.fflate.inflateSync(new Uint8Array(buffer, 2), { out: this.scratch });
@@ -208,7 +215,7 @@ export class RemoteBackend {
         this.requestKeyframe();
         return;
       }
-      if (out.length !== FB_BYTES) {
+      if (out.length !== this.fbBytes) {
         this.requestKeyframe();
         return;
       }
@@ -265,6 +272,7 @@ export class RemoteBackend {
   reset() { this.sendJSON({ t: 'reset' }); }
   setLid(closed) { this.sendJSON({ t: 'lid', closed }); }
   setStreamDivider(divider) { this.sendJSON({ t: 'fps', divider }); }
+  setSpeed(value) { this.sendJSON({ t: 'speed', value }); }
 
   getSave() {
     if (!this.started || !this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.resolve(new Uint8Array(0));

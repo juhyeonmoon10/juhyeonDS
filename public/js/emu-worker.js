@@ -4,7 +4,7 @@
  */
 'use strict';
 
-importScripts('../core/melonds.js', 'emu-runner.js');
+importScripts('systems.js', 'emu-runner.js');
 
 let runner = null;
 
@@ -12,13 +12,12 @@ function fail(err) {
   postMessage({ t: 'error', message: String((err && err.message) || err), code: (err && err.code) || '' });
 }
 
-// Size of melonds.wasm before compression; only used to estimate progress when the host
-// compresses the download and the real size is not known in advance.
-const APPROX_WASM_BYTES = 1310000;
-
 /** Downloads the core, reporting progress, so the loading screen can show a percentage. */
-async function fetchCore() {
-  const url = new URL('../core/melonds.wasm', self.location.href).href;
+async function fetchCore(core) {
+  // The uncompressed size is only used to estimate progress when the host compresses the
+  // download and the real size is not known in advance.
+  const APPROX_WASM_BYTES = core.wasmBytes;
+  const url = new URL('../core/' + core.file + '.wasm', self.location.href).href;
   const res = await fetch(url);
   if (!res.ok) throw new Error('에뮬레이터 파일을 내려받지 못했습니다 (' + res.status + ')');
   if (!res.body || !res.body.getReader) return new Uint8Array(await res.arrayBuffer());
@@ -45,13 +44,16 @@ async function fetchCore() {
 }
 
 async function load(msg) {
-  const wasmBinary = await fetchCore();
+  const system = EmuSystems.get(msg.system) || EmuSystems.get('nds');
+  const core = EmuSystems.CORES[system.core];
+  if (typeof self[core.factory] !== 'function') importScripts('../core/' + core.file + '.js');
+  const wasmBinary = await fetchCore(core);
   postMessage({ t: 'progress', stage: 'init' });
-  const M = await createMelonDS({
+  const M = await self[core.factory]({
     wasmBinary,
     locateFile: (file) => new URL('../core/' + file, self.location.href).href,
-    print: (text) => console.log('[melonDS]', text),
-    printErr: (text) => console.warn('[melonDS]', text),
+    print: (text) => console.log('[core]', text),
+    printErr: (text) => console.warn('[core]', text),
   });
 
   runner = new EmuRunner(M, {
@@ -77,7 +79,7 @@ async function load(msg) {
     onCrash() {
       postMessage({ t: 'crashed' });
     },
-  });
+  }, system);
 
   postMessage({ t: 'progress', stage: 'game' });
   const info = runner.load(new Uint8Array(msg.rom), msg.save ? new Uint8Array(msg.save) : null, {
@@ -87,7 +89,7 @@ async function load(msg) {
     bios9: msg.bios9 ? new Uint8Array(msg.bios9) : null,
     bios7: msg.bios7 ? new Uint8Array(msg.bios7) : null,
   });
-  postMessage({ t: 'loaded', saveLen: info.saveLen });
+  postMessage({ t: 'loaded', saveLen: info.saveLen, width: info.width, height: info.height, screens: info.screens });
   runner.start();
 }
 
@@ -112,6 +114,9 @@ self.onmessage = (event) => {
         break;
       case 'lid':
         if (runner) runner.setLid(msg.closed);
+        break;
+      case 'speed':
+        if (runner) runner.setSpeed(msg.value);
         break;
       case 'getsave': {
         const data = runner ? runner.getSave() : new Uint8Array(0);

@@ -65,7 +65,7 @@ export class LocalBackend {
           case 'loaded':
             started = true;
             progress('게임 시작!', 1);
-            resolve({ saveLen: m.saveLen });
+            resolve({ saveLen: m.saveLen, width: m.width, height: m.height, screens: m.screens });
             break;
           case 'frame':
             this.onFrame(new Uint8ClampedArray(m.data));
@@ -103,6 +103,7 @@ export class LocalBackend {
       this.worker.postMessage(
         {
           t: 'load',
+          system: opts.system,
           rom,
           save,
           sampleRate: opts.sampleRate,
@@ -127,6 +128,7 @@ export class LocalBackend {
   resume() { this.post({ t: 'resume' }); }
   reset() { this.post({ t: 'reset' }); }
   setLid(closed) { this.post({ t: 'lid', closed }); }
+  setSpeed(value) { this.post({ t: 'speed', value }); }
   setStreamDivider() {}
 
   getSave() {

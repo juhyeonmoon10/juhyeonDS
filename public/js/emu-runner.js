@@ -8,10 +8,8 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  var SCREEN_W = 256;
-  var SCREEN_H = 192;
-  var FB_BYTES = SCREEN_W * SCREEN_H * 2 * 4;
-  var FRAME_MS = 1000 / 59.8261;
+  var DEFAULT_SYSTEM = { id: 'nds', width: 256, height: 192, screens: 2, fps: 59.8261 };
+  var MAX_SPEED = 4;
   var SAVE_SETTLE_MS = 400; // wait for a burst of save writes to finish before reporting
   var MAX_CATCH_UP = 3;
 
@@ -20,14 +18,22 @@
   }
 
   /**
-   * @param M   Instantiated Emscripten module (createMelonDS()).
+   * @param M   Instantiated Emscripten module (createMelonDS() or createMGBA()).
+   * @param system  Entry from systems.js describing the console (screen size, frame rate).
    * @param cb  { onFrame(Uint8Array view), onAudio(Int16Array view, frames),
    *              onSave(Uint8Array copy), onStats({fps, load}), onStop(reason) }
    *            Views point into wasm memory and are only valid during the callback.
    */
-  function EmuRunner(M, cb) {
+  function EmuRunner(M, cb, system) {
     this.M = M;
     this.cb = cb || {};
+    this.system = system || DEFAULT_SYSTEM;
+    this.width = this.system.width;
+    this.height = this.system.height;
+    this.screens = this.system.screens;
+    this.fbBytes = this.width * this.height * this.screens * 4;
+    this.frameMs = 1000 / this.system.fps;
+    this.speed = 1;
     this.loaded = false;
     this.running = false;
     this.keys = 0;
@@ -43,10 +49,10 @@
     this._tick = this._tick.bind(this);
   }
 
-  EmuRunner.SCREEN_W = SCREEN_W;
-  EmuRunner.SCREEN_H = SCREEN_H;
-  EmuRunner.FB_BYTES = FB_BYTES;
-  EmuRunner.FRAME_MS = FRAME_MS;
+  /** Fast-forward: emulate `speed` frames for every displayed frame (1 = normal). */
+  EmuRunner.prototype.setSpeed = function (speed) {
+    this.speed = Math.max(1, Math.min(MAX_SPEED, Math.round(speed) || 1));
+  };
 
   EmuRunner.prototype.load = function (rom, save, opts) {
     var M = this.M;
@@ -97,10 +103,17 @@
     }
     if (result !== 0) throw new Error('ROM을 불러올 수 없습니다 (코드 ' + result + ')');
 
+    // Cores that emulate several consoles report the real picture size (GB vs GBA).
+    if (M._mds_screen_width) {
+      this.width = M._mds_screen_width();
+      this.height = M._mds_screen_height();
+      this.fbBytes = this.width * this.height * this.screens * 4;
+    }
+    this.speed = 1;
     this.loaded = true;
     this.saveDirtyAt = 0;
     this.crashReported = false;
-    return { saveLen: M._mds_save_len() };
+    return { saveLen: M._mds_save_len(), width: this.width, height: this.height, screens: this.screens };
   };
 
   EmuRunner.prototype.setInput = function (keys, touching, tx, ty) {
@@ -161,7 +174,7 @@
     if (this.cb.onSave) this.cb.onSave(this.getSave());
   };
 
-  EmuRunner.prototype._runFrame = function () {
+  EmuRunner.prototype._runFrame = function (silent) {
     var M = this.M;
     var t0 = now();
     var n = M._mds_run_frame(this.keys, this.touching, this.tx, this.ty);
@@ -172,11 +185,12 @@
       return false;
     }
 
-    if (this.cb.onFrame) {
+    // While fast-forwarding only the last frame of each group is shown and heard.
+    if (!silent && this.cb.onFrame) {
       var fb = M._mds_framebuffer();
-      this.cb.onFrame(M.HEAPU8.subarray(fb, fb + FB_BYTES));
+      this.cb.onFrame(M.HEAPU8.subarray(fb, fb + this.fbBytes));
     }
-    if (n > 0 && this.cb.onAudio) {
+    if (!silent && n > 0 && this.cb.onAudio) {
       var ap = M._mds_audio() >> 1;
       this.cb.onAudio(M.HEAP16.subarray(ap, ap + n * 2), n);
     }
@@ -217,8 +231,11 @@
 
     var ran = 0;
     while (this.running && t >= this.next && ran < MAX_CATCH_UP) {
-      if (!this._runFrame()) return;
-      this.next += FRAME_MS;
+      for (var extra = 1; extra < this.speed; extra++) {
+        if (!this._runFrame(true)) return;
+      }
+      if (!this._runFrame(false)) return;
+      this.next += this.frameMs;
       ran++;
       t = now();
     }

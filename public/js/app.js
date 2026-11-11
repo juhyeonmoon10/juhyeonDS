@@ -13,8 +13,8 @@ const $ = (id) => document.getElementById(id);
 const config = window.MELONDS_CONFIG || {};
 const settings = storage.loadSettings();
 
-const SCREEN_BYTES = 256 * 192 * 4;
-const ROM_EXT = /\.(nds|srl|dsi|ids)$/i;
+const Systems = window.EmuSystems;
+const ROM_EXT = Systems.ROM_PATTERN;
 const ZIP_EXT = /\.zip$/i;
 const SAVE_EXT = /\.(sav|dsv|bak)$/i;
 const STOP_REASONS = {
@@ -26,6 +26,7 @@ const STOP_REASONS = {
 const state = {
   rom: null, // { name, blob, id, title, code, source, encrypted }
   bios: null, // { arm9, arm7 } user-supplied console BIOS, or null for the built-in FreeBIOS
+  fastForward: false,
   slowSeconds: 0,
   slowToastShown: false,
   save: null, // { name, data: Uint8Array, source: 'file' | 'drive' }
@@ -54,8 +55,24 @@ const topCanvas = $('screen-top');
 const bottomCanvas = $('screen-bottom');
 const topCtx = topCanvas.getContext('2d', { alpha: false });
 const bottomCtx = bottomCanvas.getContext('2d', { alpha: false });
-const topImage = topCtx.createImageData(256, 192);
-const bottomImage = bottomCtx.createImageData(256, 192);
+// Picture geometry of the running game; set from what the core reports when it starts.
+const screen = { width: 256, height: 192, count: 2, bytes: 256 * 192 * 4 };
+let topImage = topCtx.createImageData(256, 192);
+let bottomImage = bottomCtx.createImageData(256, 192);
+
+function setScreenGeometry(width, height, count) {
+  screen.width = width;
+  screen.height = height;
+  screen.count = count;
+  screen.bytes = width * height * 4;
+  for (const canvas of [topCanvas, bottomCanvas]) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  topImage = topCtx.createImageData(width, height);
+  bottomImage = bottomCtx.createImageData(width, height);
+  bottomCanvas.hidden = count < 2;
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -162,14 +179,16 @@ async function setRom(name, blob, source) {
         filter: (file) => ROM_EXT.test(file.name),
       });
       const inner = Object.keys(entries)[0];
-      if (!inner) throw new Error('압축 파일 안에 .nds 파일이 없습니다.');
+      if (!inner) throw new Error('압축 파일 안에 게임 파일(.nds, .gba, .gb, .gbc)이 없습니다.');
       name = inner.split('/').pop();
       blob = new Blob([entries[inner]]);
     } finally {
       busyOff();
     }
   }
-  if (blob.size < 0x200) throw new Error('ROM 파일이 너무 작습니다. 올바른 .nds 파일인지 확인하세요.');
+  if (blob.size < 0x200) throw new Error('ROM 파일이 너무 작습니다. 올바른 게임 파일인지 확인하세요.');
+  // Files without a known extension are treated as DS ROMs, as before.
+  const system = Systems.forFileName(name) || Systems.get('nds');
 
   const head = new Uint8Array(await blob.slice(0, 0x200).arrayBuffer());
   const ascii = (bytes) =>
@@ -178,21 +197,36 @@ async function setRom(name, blob, source) {
       .map((b) => String.fromCharCode(b))
       .join('')
       .trim();
-  const title = ascii(head.subarray(0, 12));
-  const code = ascii(head.subarray(12, 16));
-  const crc = head[0x15e] | (head[0x15f] << 8);
-  const id = `${code || 'NONE'}-${title || 'UNTITLED'}-${crc.toString(16).padStart(4, '0')}`;
+  // Each console keeps its title, game code and a checksum at different header offsets.
+  let title;
+  let code;
+  let crc;
+  if (system.id === 'gba') {
+    title = ascii(head.subarray(0xa0, 0xac));
+    code = ascii(head.subarray(0xac, 0xb0));
+    crc = head[0xbd];
+  } else if (system.id === 'gb') {
+    title = ascii(head.subarray(0x134, 0x143));
+    code = '';
+    crc = (head[0x14e] << 8) | head[0x14f];
+  } else {
+    title = ascii(head.subarray(0, 12));
+    code = ascii(head.subarray(12, 16));
+    crc = head[0x15e] | (head[0x15f] << 8);
+  }
+  const prefix = system.id === 'nds' ? '' : system.id.toUpperCase() + '-';
+  const id = `${prefix}${code || 'NONE'}-${title || 'UNTITLED'}-${crc.toString(16).padStart(4, '0')}`;
 
-  // An encrypted dump has no E7FFDEFF marker at the start of its secure area.
+  // An encrypted DS dump has no E7FFDEFF marker at the start of its secure area.
   const dv = new DataView(head.buffer);
   const arm9off = dv.getUint32(0x20, true);
   let encrypted = false;
-  if (arm9off >= 0x4000 && arm9off < 0x8000 && code !== '####' && blob.size >= arm9off + 4) {
+  if (system.id === 'nds' && arm9off >= 0x4000 && arm9off < 0x8000 && code !== '####' && blob.size >= arm9off + 4) {
     const marker = new DataView(await blob.slice(arm9off, arm9off + 4).arrayBuffer()).getUint32(0, true);
     encrypted = marker !== 0xe7ffdeff;
   }
 
-  state.rom = { name, blob, id, title, code, source, encrypted };
+  state.rom = { name, blob, id, title, code, source, encrypted, system };
   try {
     state.autosave = (await storage.getSave(id)) || null;
   } catch (err) {
@@ -221,7 +255,7 @@ async function handleFiles(files) {
       } else if (ROM_EXT.test(file.name) || ZIP_EXT.test(file.name)) {
         await setRom(file.name, file, 'file');
       } else {
-        toast(`“${file.name}”은(는) 지원하지 않는 파일입니다 (.nds / .sav)`, 'error');
+        toast(`“${file.name}”은(는) 지원하지 않는 파일입니다 (.nds / .gba / .gb / .gbc / .sav)`, 'error');
       }
     } catch (err) {
       toast(err.message, 'error');
@@ -235,13 +269,13 @@ function renderHome() {
     romName.textContent = state.rom.name;
     romName.classList.remove('empty');
     romName.nextElementSibling.textContent =
-      [state.rom.title, state.rom.code, formatSize(state.rom.blob.size), state.rom.source === 'drive' ? 'Google Drive' : '']
+      [state.rom.system.label, state.rom.title, state.rom.code, formatSize(state.rom.blob.size), state.rom.source === 'drive' ? 'Google Drive' : '']
         .filter(Boolean)
         .join(' · ');
   } else {
     romName.textContent = '선택된 ROM 없음';
     romName.classList.add('empty');
-    romName.nextElementSibling.textContent = '.nds 파일 (또는 .nds가 들어 있는 .zip)';
+    romName.nextElementSibling.textContent = 'DS(.nds) · GBA(.gba) · GB/GBC(.gb, .gbc) 또는 이 파일이 든 .zip';
   }
 
   const saveName = $('save-name');
@@ -401,10 +435,12 @@ async function initServerMode() {
 // Running a game
 // ---------------------------------------------------------------------------
 function drawFrame(frame) {
-  topImage.data.set(frame.subarray(0, SCREEN_BYTES));
-  bottomImage.data.set(frame.subarray(SCREEN_BYTES, SCREEN_BYTES * 2));
+  topImage.data.set(frame.subarray(0, screen.bytes));
   topCtx.putImageData(topImage, 0, 0);
-  bottomCtx.putImageData(bottomImage, 0, 0);
+  if (screen.count > 1) {
+    bottomImage.data.set(frame.subarray(screen.bytes, screen.bytes * 2));
+    bottomCtx.putImageData(bottomImage, 0, 0);
+  }
 }
 
 function persistSave(data) {
@@ -502,6 +538,7 @@ async function startGame() {
     const now = new Date();
     const info = await backend.start({
       rom: state.rom.blob,
+      system: state.rom.system.id,
       save,
       sampleRate: audio.sampleRate,
       bios: state.bios,
@@ -511,12 +548,13 @@ async function startGame() {
       onProgress: busy,
     });
 
+    setScreenGeometry(info.width || state.rom.system.width, info.height || state.rom.system.height, info.screens || state.rom.system.screens);
     state.backend = backend;
     state.saveLen = info.saveLen;
     state.lastSave = save ? save.slice() : null;
     enterPlayer();
 
-    if (save && info.saveLen && save.length !== info.saveLen) {
+    if (state.rom.system.id === 'nds' && save && info.saveLen && save.length !== info.saveLen) {
       toast(`세이브 파일 크기(${formatSize(save.length)})가 이 게임의 세이브 크기(${formatSize(info.saveLen)})와 달라 맞춰서 불러왔습니다.`);
     }
   } catch (err) {
@@ -543,9 +581,15 @@ function enterPlayer() {
   $('paused-badge').hidden = true;
   $('m-lid').textContent = '덮개 닫기';
   $('menu-title').textContent = state.rom.title || state.rom.name;
-  $('menu-save-state').textContent = state.saveLen
-    ? '게임 안에서 저장하면 이 브라우저에 자동으로 보관됩니다.'
-    : '이 게임은 카트리지 세이브를 사용하지 않습니다.';
+  const isDS = state.rom.system.id === 'nds';
+  $('menu-save-state').textContent =
+    state.saveLen || !isDS
+      ? '게임 안에서 저장하면 이 브라우저에 자동으로 보관됩니다.'
+      : '이 게임은 카트리지 세이브를 사용하지 않습니다.';
+  $('m-lid').hidden = !isDS;
+  $('vpad').classList.toggle('no-xy', !state.rom.system.xy);
+  state.fastForward = false;
+  renderFastForward();
   document.body.classList.add('playing');
   applySettings();
   input.start();
@@ -578,8 +622,8 @@ async function endGame(flush) {
   $('player').hidden = true;
   $('home').hidden = false;
   document.body.classList.remove('playing');
-  topCtx.fillRect(0, 0, 256, 192);
-  bottomCtx.fillRect(0, 0, 256, 192);
+  topCtx.fillRect(0, 0, screen.width, screen.height);
+  bottomCtx.fillRect(0, 0, screen.width, screen.height);
   if (state.rom) {
     try {
       state.autosave = (await storage.getSave(state.rom.id)) || null;
@@ -659,9 +703,12 @@ function layoutScreens() {
 
   // Prefer a layout that keeps the screens clear of the pad; only when that would shrink the
   // picture below native size do we let the pad overlap instead.
+  const sw = screen.width;
+  const sh0 = screen.height;
   const pick = (aw, ah) => {
-    const sv = Math.min(aw / 256, ah / 384);
-    const sh = Math.min(aw / 512, ah / 192);
+    if (screen.count < 2) return { mode: 'vertical', scale: Math.min(aw / sw, ah / sh0) };
+    const sv = Math.min(aw / sw, ah / (sh0 * 2));
+    const sh = Math.min(aw / (sw * 2), ah / sh0);
     let m = settings.layout;
     if (m !== 'vertical' && m !== 'horizontal') m = sh > sv * 1.02 ? 'horizontal' : 'vertical';
     return { mode: m, scale: m === 'horizontal' ? sh : sv };
@@ -671,14 +718,14 @@ function layoutScreens() {
   const mode = chosen.mode;
   const scale = chosen.scale;
 
-  const cw = Math.max(1, Math.floor(256 * scale));
-  const ch = Math.max(1, Math.floor(192 * scale));
+  const cw = Math.max(1, Math.floor(sw * scale));
+  const ch = Math.max(1, Math.floor(sh0 * scale));
   for (const canvas of [topCanvas, bottomCanvas]) {
     canvas.style.width = cw + 'px';
     canvas.style.height = ch + 'px';
   }
   const totalW = mode === 'horizontal' ? cw * 2 : cw;
-  const totalH = mode === 'horizontal' ? ch : ch * 2;
+  const totalH = mode === 'horizontal' ? ch : ch * screen.count;
   const screens = $('screens');
   screens.className = mode + (settings.filter === 'smooth' ? ' smooth' : '');
   screens.style.left = Math.max(0, Math.round((W - totalW) / 2)) + 'px';
@@ -1012,6 +1059,19 @@ const input = new Input({
   isBlocked: () => !state.playing || anyDialogOpen(),
 });
 
+// Fast-forward: hold Space or Tab, or tap the F.F. button to toggle.
+function renderFastForward() {
+  $('btn-ff').classList.toggle('on', !!state.fastForward);
+  if (state.fastForward) flashHud('빨리 감기 ×3');
+}
+function setFastForward(on) {
+  if (!state.playing || !!state.fastForward === !!on) return;
+  state.fastForward = !!on;
+  if (state.backend) state.backend.setSpeed(on ? 3 : 1);
+  audio.flush();
+  renderFastForward();
+}
+
 function openMenu() {
   if (!state.playing || $('dlg-menu').open) return;
   state.menuPaused = true;
@@ -1121,6 +1181,16 @@ function bindUI() {
 
   // Player
   $('btn-menu').addEventListener('click', openMenu);
+  $('btn-ff').addEventListener('click', () => setFastForward(!state.fastForward));
+  const isFastKey = (e) => e.code === 'Space' || e.code === 'Tab';
+  window.addEventListener('keydown', (e) => {
+    if (!state.playing || anyDialogOpen() || !isFastKey(e)) return;
+    e.preventDefault();
+    if (!e.repeat) setFastForward(true);
+  });
+  window.addEventListener('keyup', (e) => {
+    if (state.playing && isFastKey(e)) setFastForward(false);
+  });
   $('dlg-menu').addEventListener('close', () => {
     state.menuPaused = false;
     updatePause();
@@ -1272,6 +1342,39 @@ storage
   })
   .catch(() => {});
 if (googleClientId()) preloadGIS();
+
+// ---------------------------------------------------------------------------
+// Installable app (PWA)
+// ---------------------------------------------------------------------------
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  $('btn-install').hidden = false;
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  $('btn-install').hidden = true;
+  toast('juhyeonDS를 앱으로 설치했습니다.');
+});
+$('btn-install').addEventListener('click', async () => {
+  if (!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
+  $('btn-install').hidden = true;
+});
+// Opening a .nds / .gba file with the installed app hands it over here.
+if ('launchQueue' in window) {
+  window.launchQueue.setConsumer(async (params) => {
+    if (!params.files || !params.files.length || state.playing) return;
+    const files = await Promise.all(params.files.map((handle) => handle.getFile()));
+    handleFiles(files);
+  });
+}
 
 // Hook for automated tests.
 window.__melon = { state, settings, audio, drive };
