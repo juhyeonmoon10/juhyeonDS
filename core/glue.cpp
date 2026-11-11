@@ -1,5 +1,5 @@
 /*
-    melonDS Web - WebAssembly glue for the melonDS core.
+    juhyeonDS - WebAssembly glue for the melonDS core.
 
     This file is part of a program built on melonDS (Copyright 2016-2025 melonDS team).
     It is free software: you can redistribute it and/or modify it under the terms of the

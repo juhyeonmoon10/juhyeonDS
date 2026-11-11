@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(melonds_web C CXX)
+project(juhyeonds C CXX)
 
 set(MELONDS_DIR "" CACHE PATH "Path to a melonDS source checkout")
 if (NOT EXISTS "${MELONDS_DIR}/src/NDS.cpp")
