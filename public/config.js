@@ -1,4 +1,4 @@
-// melonDS Web 설정 파일입니다. 값을 바꾼 뒤 페이지를 새로고침하세요.
+// juhyeonDS 설정 파일입니다. 값을 바꾼 뒤 페이지를 새로고침하세요.
 window.MELONDS_CONFIG = {
   // Google Drive 연동에 쓰는 OAuth 클라이언트 ID.
   // 비워 두면 "Google Drive 연결"을 누를 때 입력 창이 나타나고, 입력값은 그 브라우저에만 저장됩니다.
@@ -6,7 +6,7 @@ window.MELONDS_CONFIG = {
   googleClientId: "",
 
   // Drive에 만들어지는 폴더 이름.
-  driveFolderName: "melonDS Web",
+  driveFolderName: "juhyeonDS",
 
   // 서버 에뮬레이션 모드에서 접속할 서버 주소.
   // 비워 두면 이 페이지를 제공한 서버(같은 주소)를 사용합니다.
