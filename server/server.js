@@ -5,6 +5,7 @@
  *   node server/server.js [--port 8080] [--host 127.0.0.1] [--public] [--password SECRET] [--open]
  *                         [--max-sessions 4] [--no-emulation] [--cert cert.pem --key key.pem]
  *                         [--tunnel]   make the server reachable from other networks
+ *                         [--name NAME] [--no-announce]   listing on the site's "servers that are on" list
  *                         [--rom-cache-mb 8192]  disk space for remembered game files (0 = off)
  *
  * Environment variables PORT, HOST, PASSWORD, MAX_SESSIONS, TLS_CERT, TLS_KEY work too.
@@ -489,6 +490,18 @@ server.listen(PORT, HOST, () => {
         console.log('  이 주소는 서버를 켤 때마다 바뀝니다. 주소를 아는 사람은 누구나 접속할 수 있으니');
         console.log('  필요하면 --password 옵션으로 비밀번호를 거세요.');
         console.log('');
+        if (EMULATION && !args['no-announce']) {
+          const name = typeof args.name === 'string' ? args.name : require('os').hostname();
+          require('./announce')
+            .startAnnouncing({ url: tunnel.url, name, passwordRequired: !!PASSWORD })
+            .then((ok) => {
+              if (!ok) return;
+              console.log(`  사이트의 "켜져 있는 서버" 목록에 "${name}" 이름으로 표시됩니다 (주소 입력 불필요).`);
+              console.log('  목록에 올리지 않으려면 --no-announce, 이름을 바꾸려면 --name 이름');
+              console.log('');
+            })
+            .catch((err) => console.error('  [알림] 서버 목록에 올리지 못했습니다: ' + err.message + ' (주소를 직접 입력하면 사용할 수 있습니다)'));
+        }
       })
       .catch((err) => {
         console.error('');
