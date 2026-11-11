@@ -40,6 +40,7 @@
       </div>
       <button id="btn-save-clear" class="btn ghost small" type="button" hidden aria-label="세이브 선택 해제">✕</button>
     </div>
+    <p id="rom-warning" class="warn" hidden></p>
     <label id="autosave-row" class="check" hidden>
       <input id="chk-autosave" type="checkbox" checked>
       <span>이 브라우저에 자동 저장된 세이브 이어하기 <em id="autosave-date"></em></span>
@@ -204,6 +205,16 @@
     </label>
     <label class="check"><input id="s-showfps" type="checkbox"><span>속도(fps) 표시</span></label>
     <label class="check"><input id="s-driveauto" type="checkbox"><span>게임이 저장될 때마다 Drive에도 자동 저장</span></label>
+  </div>
+  <div class="bios">
+    <h3>DS BIOS 파일 (선택)</h3>
+    <p class="hint">보통은 필요 없습니다. 암호화된 ROM 덤프를 실행하거나 호환성을 높이려면 본인 DS에서 추출한 <code>bios9.bin</code>(4KB)과 <code>bios7.bin</code>(16KB)을 함께 선택해 등록하세요. 이 브라우저에만 저장됩니다.</p>
+    <div class="bios-row">
+      <span id="bios-status" class="pill">등록 안 됨</span>
+      <button id="btn-bios" class="btn small" type="button">BIOS 파일 선택</button>
+      <button id="btn-bios-clear" class="btn ghost small danger" type="button" hidden>삭제</button>
+    </div>
+    <input id="file-bios" type="file" accept=".bin,.rom,application/octet-stream" multiple hidden>
   </div>
   <div class="keys">
     <h3>키보드 조작</h3>
