@@ -589,6 +589,8 @@ function enterPlayer() {
   $('m-lid').hidden = !isDS;
   $('vpad').classList.toggle('no-xy', !state.rom.system.xy);
   state.fastForward = false;
+  state.speed = 1;
+  state.holdSpeed = 0;
   renderFastForward();
   document.body.classList.add('playing');
   applySettings();
@@ -1059,17 +1061,39 @@ const input = new Input({
   isBlocked: () => !state.playing || anyDialogOpen(),
 });
 
-// Fast-forward: hold Space or Tab, or tap the F.F. button to toggle.
-function renderFastForward() {
-  $('btn-ff').classList.toggle('on', !!state.fastForward);
-  if (state.fastForward) flashHud('빨리 감기 ×3');
+// Speed: tap the speed button to step ×1 → ×2 → ×3 → ×4 → ×1, or hold Space/Tab for a temporary boost.
+const MAX_SPEED = 4;
+function currentSpeed() {
+  return state.holdSpeed || state.speed || 1;
 }
-function setFastForward(on) {
-  if (!state.playing || !!state.fastForward === !!on) return;
-  state.fastForward = !!on;
-  if (state.backend) state.backend.setSpeed(on ? 3 : 1);
+function renderFastForward() {
+  const speed = currentSpeed();
+  const button = $('btn-ff');
+  button.textContent = '×' + speed;
+  button.classList.toggle('on', speed > 1);
+  button.setAttribute('aria-label', '배속: ' + speed + '배 (누르면 바뀝니다)');
+}
+function applySpeed(announce) {
+  const speed = currentSpeed();
+  state.fastForward = speed > 1;
+  if (state.backend) state.backend.setSpeed(speed);
   audio.flush();
   renderFastForward();
+  if (announce) flashHud(speed > 1 ? '배속 ×' + speed : '보통 속도');
+}
+function cycleSpeed() {
+  if (!state.playing) return;
+  state.holdSpeed = 0;
+  state.speed = (state.speed || 1) >= MAX_SPEED ? 1 : (state.speed || 1) + 1;
+  applySpeed(true);
+}
+/** Held key: jump to at least ×3 (or the chosen speed if higher) until released. */
+function setFastForward(on) {
+  if (!state.playing) return;
+  const hold = on ? Math.max(3, state.speed || 1) : 0;
+  if (hold === (state.holdSpeed || 0)) return;
+  state.holdSpeed = hold;
+  applySpeed(on);
 }
 
 function openMenu() {
@@ -1181,7 +1205,7 @@ function bindUI() {
 
   // Player
   $('btn-menu').addEventListener('click', openMenu);
-  $('btn-ff').addEventListener('click', () => setFastForward(!state.fastForward));
+  $('btn-ff').addEventListener('click', cycleSpeed);
   const isFastKey = (e) => e.code === 'Space' || e.code === 'Tab';
   window.addEventListener('keydown', (e) => {
     if (!state.playing || anyDialogOpen() || !isFastKey(e)) return;
