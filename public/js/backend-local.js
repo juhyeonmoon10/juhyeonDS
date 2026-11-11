@@ -11,6 +11,22 @@
  *   callbacks: onFrame(Uint8ClampedArray), onAudio(Int16Array), onSave(Uint8Array),
  *              onStats({fps, load, ping?}), onError(message), onStopped(reason)
  */
+/** Reads a Blob into an ArrayBuffer, reporting progress as a 0..1 fraction. */
+async function readBlob(blob, onProgress) {
+  if (!blob.stream) return blob.arrayBuffer();
+  const out = new Uint8Array(blob.size);
+  const reader = blob.stream().getReader();
+  let offset = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    out.set(value, offset);
+    offset += value.length;
+    onProgress(blob.size ? offset / blob.size : 1);
+  }
+  return out.buffer;
+}
+
 export class LocalBackend {
   constructor() {
     this.kind = 'local';
@@ -21,12 +37,15 @@ export class LocalBackend {
   }
 
   async start(opts) {
-    if (opts.onProgress) opts.onProgress('ROM 읽는 중…', null);
-    const rom = await opts.rom.arrayBuffer();
+    // Overall progress: reading the ROM 0-35%, downloading the core 35-75%,
+    // starting the core 75-85%, loading the game into it 85-100%.
+    const progress = opts.onProgress || (() => {});
+    progress('게임 파일 읽는 중…', 0);
+    const rom = await readBlob(opts.rom, (f) => progress('게임 파일 읽는 중…', f * 0.35));
     const save = opts.save ? opts.save.slice().buffer : null;
 
     this.worker = new Worker(new URL('./emu-worker.js', import.meta.url));
-    if (opts.onProgress) opts.onProgress('에뮬레이터 시작 중…', null);
+    progress('에뮬레이터 내려받는 중…', 0.35);
 
     return new Promise((resolve, reject) => {
       let started = false;
@@ -38,8 +57,14 @@ export class LocalBackend {
       this.worker.onmessage = (event) => {
         const m = event.data;
         switch (m.t) {
+          case 'progress':
+            if (m.stage === 'core') progress('에뮬레이터 내려받는 중…', 0.35 + m.fraction * 0.4);
+            else if (m.stage === 'init') progress('에뮬레이터 준비 중…', 0.75);
+            else if (m.stage === 'game') progress('게임 불러오는 중…', 0.85);
+            break;
           case 'loaded':
             started = true;
+            progress('게임 시작!', 1);
             resolve({ saveLen: m.saveLen });
             break;
           case 'frame':

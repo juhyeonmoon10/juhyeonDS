@@ -73,7 +73,7 @@ export class RemoteBackend {
         reject(Object.assign(new Error(message), { code: code || '' }));
       };
 
-      progress('서버에 연결 중…', null);
+      progress('서버에 연결 중…', 0);
       let ws;
       try {
         ws = new WebSocket(url);
@@ -85,6 +85,7 @@ export class RemoteBackend {
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
+        progress('서버에 연결됨', 0.05);
         ws.send(
           JSON.stringify({
             t: 'start',
@@ -115,6 +116,7 @@ export class RemoteBackend {
             this.upload(opts, progress).catch((err) => failStart('업로드 실패: ' + err.message));
             break;
           case 'loaded':
+            progress('게임 시작!', 1);
             settled = true;
             this.started = true;
             this.pingTimer = setInterval(() => this.sendPing(), 2000);
@@ -166,7 +168,7 @@ export class RemoteBackend {
       msg[0] = MSG_ROM_CHUNK;
       msg.set(part, 1);
       ws.send(msg);
-      progress('ROM을 서버로 보내는 중…', Math.min(1, (offset + part.length) / total));
+      progress('게임 파일을 서버로 보내는 중…', 0.05 + 0.85 * Math.min(1, (offset + part.length) / total));
       while (ws.bufferedAmount > UPLOAD_WINDOW) {
         await new Promise((r) => setTimeout(r, 20));
         if (ws.readyState !== WebSocket.OPEN) throw new Error('연결이 끊어졌습니다');
@@ -189,7 +191,7 @@ export class RemoteBackend {
         ws.send(msg);
       }
     }
-    progress('서버에서 게임을 시작하는 중…', null);
+    progress('서버에서 게임을 시작하는 중…', 0.92);
     ws.send(JSON.stringify({ t: 'go' }));
   }
 

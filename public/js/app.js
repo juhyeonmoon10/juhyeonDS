@@ -73,7 +73,9 @@ function busy(text, fraction) {
   if (text) $('busy-text').textContent = text;
   const bar = $('busy-bar');
   bar.parentElement.style.visibility = fraction == null ? 'hidden' : 'visible';
-  if (fraction != null) bar.style.width = Math.round(fraction * 100) + '%';
+  const percent = fraction == null ? null : Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  if (percent != null) bar.style.width = percent + '%';
+  $('busy-percent').textContent = percent == null ? '' : percent + '%';
 }
 
 function busyOff() {
@@ -414,7 +416,7 @@ async function startGame() {
   if (!state.rom || state.playing || state.starting) return;
   state.starting = true;
   renderHome();
-  busy('준비 중…', null);
+  busy('준비 중…', 0);
 
   const mode = state.mode;
   const backend = mode === 'server' ? new RemoteBackend($('server-password').value) : new LocalBackend();
