@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * melonDS Web - static file host + optional server-side emulation (streaming).
+ * juhyeonDS - static file host + optional server-side emulation (streaming).
  *
  *   node server/server.js [--port 8080] [--host 127.0.0.1] [--public] [--password SECRET] [--open]
  *                         [--max-sessions 4] [--no-emulation] [--cert cert.pem --key key.pem]
@@ -129,7 +129,7 @@ function handleRequest(req, res) {
   }
   if (req.url.split('?')[0] === '/api/info') {
     sendJSON(res, 200, {
-      name: 'melonds-web',
+      name: 'juhyeonds',
       emulation: EMULATION,
       passwordRequired: EMULATION && PASSWORD !== '',
       sessions: sessions.size,
@@ -410,7 +410,7 @@ server.on('error', (err) => {
 server.listen(PORT, HOST, () => {
   const scheme = useTLS ? 'https' : 'http';
   console.log('');
-  console.log('  melonDS Web 실행 중');
+  console.log('  juhyeonDS 실행 중');
   console.log('  ------------------------------------------');
   console.log(`  이 컴퓨터에서:   ${scheme}://localhost:${PORT}`);
   if (HOST === '0.0.0.0' || HOST === '::') {

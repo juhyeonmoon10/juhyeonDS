@@ -1,5 +1,5 @@
 /*
- * melonDS Web - one emulation session running on the server (worker thread).
+ * juhyeonDS - one emulation session running on the server (worker thread).
  * Runs the same WebAssembly core as the browser and streams video/audio to the client.
  * Licensed under the GNU General Public License v3 or later.
  */
