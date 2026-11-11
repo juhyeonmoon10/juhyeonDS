@@ -210,7 +210,7 @@ class Session {
         if (this.expect) throw new Error('세션이 이미 시작되었습니다');
         const romSize = Number(msg.romSize) | 0;
         const saveSize = Number(msg.saveSize) | 0;
-        if (romSize < 0x200 || romSize > MAX_ROM_BYTES) throw new Error('ROM 크기가 올바르지 않습니다');
+        if (romSize < 0x150 || romSize > MAX_ROM_BYTES) throw new Error('ROM 크기가 올바르지 않습니다');
         if (saveSize < 0 || saveSize > MAX_SAVE_BYTES) throw new Error('세이브 크기가 올바르지 않습니다');
         this.expect = {
           romSize,
@@ -220,6 +220,7 @@ class Session {
           datetime: Array.isArray(msg.datetime) ? msg.datetime.slice(0, 6).map((n) => Number(n) | 0) : null,
           fpsDivider: msg.fpsDivider === 2 ? 2 : 1,
           bios: !!msg.bios,
+          system: ['nds', 'gba', 'gb'].includes(msg.system) ? msg.system : 'nds',
         };
         this.send({ t: 'upload' });
         break;
@@ -239,6 +240,9 @@ class Session {
         break;
       case 'fps':
         if (this.worker) this.worker.postMessage({ t: 'fps', divider: msg.divider === 2 ? 2 : 1 });
+        break;
+      case 'speed':
+        if (this.worker) this.worker.postMessage({ t: 'speed', value: Math.max(1, Math.min(4, Number(msg.value) | 0)) });
         break;
       case 'ping':
         this.send({ t: 'pong', id: msg.id });
@@ -307,6 +311,7 @@ class Session {
     this.worker.postMessage(
       {
         t: 'load',
+        system: this.expect.system,
         rom,
         save,
         sampleRate: this.expect.sampleRate,

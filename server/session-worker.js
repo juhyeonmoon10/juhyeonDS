@@ -10,7 +10,7 @@ const path = require('path');
 const zlib = require('zlib');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
-const createMelonDS = require(path.join(PUBLIC_DIR, 'core', 'melonds.js'));
+const EmuSystems = require(path.join(PUBLIC_DIR, 'js', 'systems.js'));
 const EmuRunner = require(path.join(PUBLIC_DIR, 'js', 'emu-runner.js'));
 
 // Binary message types, server -> client (first byte)
@@ -18,8 +18,7 @@ const MSG_VIDEO = 0x20;
 const MSG_AUDIO = 0x21;
 const MSG_SAVE = 0x22;
 
-const FB_BYTES = EmuRunner.FB_BYTES;
-const FB_WORDS = FB_BYTES / 4;
+let FB_WORDS = 0; // picture size in pixels, known once the game is loaded
 
 let runner = null;
 let fpsDivider = 1;
@@ -27,9 +26,10 @@ let frameCounter = 0;
 let needKeyframe = true;
 let videoPaused = false; // set by the main thread while the socket is backed up
 
-const prev = new Uint32Array(FB_WORDS);
-const delta = new Uint32Array(FB_WORDS);
-const deltaBytes = Buffer.from(delta.buffer);
+let prev = null;
+let delta = null;
+let deltaBytes = null;
+let aligned = null;
 
 function sendBinary(type, flags, payload) {
   const out = new Uint8Array(2 + payload.length);
@@ -52,7 +52,15 @@ function onFrame(view) {
   }
 
   // Copy out of wasm memory as 32-bit pixels (alignment is guaranteed by the core's static buffer).
-  const cur = new Uint32Array(view.buffer, view.byteOffset, FB_WORDS);
+  // View the frame as 32-bit pixels; copy first if the core's buffer is not 4-byte aligned.
+  let cur;
+  if (view.byteOffset & 3) {
+    if (!aligned) aligned = new Uint8Array(FB_WORDS * 4);
+    aligned.set(view);
+    cur = new Uint32Array(aligned.buffer, 0, FB_WORDS);
+  } else {
+    cur = new Uint32Array(view.buffer, view.byteOffset, FB_WORDS);
+  }
   let payload;
   let flags = 0;
   if (needKeyframe) {
@@ -85,7 +93,10 @@ function onSave(data) {
 }
 
 async function load(msg) {
-  const M = await createMelonDS({
+  const system = EmuSystems.get(msg.system) || EmuSystems.get('nds');
+  const core = EmuSystems.CORES[system.core];
+  const createCore = require(path.join(PUBLIC_DIR, 'core', core.file + '.js'));
+  const M = await createCore({
     print: () => {},
     printErr: () => {},
   });
@@ -96,7 +107,7 @@ async function load(msg) {
     onStats: (s) => sendJSON({ t: 'stats', fps: s.fps, load: s.load }),
     onStop: (reason) => sendJSON({ t: 'stopped', reason }),
     onCrash: () => sendJSON({ t: 'crashed' }),
-  });
+  }, system);
   fpsDivider = msg.fpsDivider === 2 ? 2 : 1;
   const info = runner.load(new Uint8Array(msg.rom), msg.save ? new Uint8Array(msg.save) : null, {
     sampleRate: msg.sampleRate,
@@ -105,7 +116,11 @@ async function load(msg) {
     bios9: msg.bios9 ? new Uint8Array(msg.bios9) : null,
     bios7: msg.bios7 ? new Uint8Array(msg.bios7) : null,
   });
-  sendJSON({ t: 'loaded', saveLen: info.saveLen });
+  FB_WORDS = runner.fbBytes / 4;
+  prev = new Uint32Array(FB_WORDS);
+  delta = new Uint32Array(FB_WORDS);
+  deltaBytes = Buffer.from(delta.buffer);
+  sendJSON({ t: 'loaded', saveLen: info.saveLen, width: info.width, height: info.height, screens: info.screens });
   needKeyframe = true;
   runner.start();
 }
@@ -136,6 +151,9 @@ parentPort.on('message', (msg) => {
         break;
       case 'fps':
         fpsDivider = msg.divider === 2 ? 2 : 1;
+        break;
+      case 'speed':
+        if (runner) runner.setSpeed(msg.value);
         break;
       case 'getsave':
         if (runner) sendBinary(MSG_SAVE, 1, runner.getSave());
