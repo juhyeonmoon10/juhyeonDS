@@ -3,7 +3,7 @@
  * Licensed under the GNU General Public License v3 or later.
  */
 import { LocalBackend } from './backend-local.js';
-import { RemoteBackend, probeServer } from './backend-remote.js';
+import { RemoteBackend, probeServer, discoverServers } from './backend-remote.js';
 import { AudioPlayer } from './audio.js';
 import { Input } from './input.js';
 import * as storage from './storage.js';
@@ -426,8 +426,75 @@ async function initServerMode() {
     button.disabled = true;
     desc.textContent = info
       ? '이 서버는 에뮬레이션 기능이 꺼져 있습니다.'
-      : '연결된 서버가 없습니다. 아래에 서버 주소를 입력하거나, start-server로 실행한 주소로 접속하세요.';
+      : '연결된 서버가 없습니다. 아래 목록에서 켜져 있는 서버를 고르거나 서버 주소를 입력하세요.';
     setMode('local');
+  }
+  refreshServerList();
+}
+
+/** Points this page at a server and re-checks it. */
+function chooseServer(url) {
+  settings.serverUrl = url;
+  settings.mode = 'server';
+  storage.saveSettings(settings);
+  return initServerMode();
+}
+
+// "Servers that are on": lets the user pick a running server instead of typing its address.
+let serverListRun = 0;
+const autoChosen = new Set();
+async function refreshServerList() {
+  const run = ++serverListRun;
+  const box = $('server-list-box');
+  const list = $('server-list');
+  const empty = $('server-list-empty');
+  const refresh = $('btn-server-refresh');
+  refresh.disabled = true;
+  refresh.textContent = '찾는 중…';
+  const servers = await discoverServers();
+  if (run !== serverListRun) return;
+  refresh.disabled = false;
+  refresh.textContent = '새로고침';
+  if (servers === null && !box.dataset.shown) {
+    box.hidden = true; // feature off, or the list could not be read
+    return;
+  }
+  box.hidden = false;
+  box.dataset.shown = '1';
+  const current = (settings.serverUrl || '').replace(/\/+$/, '');
+  list.textContent = '';
+  for (const server of servers || []) {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'server-item' + (server.url === current ? ' on' : '');
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    const who = document.createElement('span');
+    who.className = 'who';
+    const name = document.createElement('strong');
+    name.textContent = (server.info.passwordRequired ? '🔒 ' : '') + server.name;
+    const host = document.createElement('small');
+    host.textContent = server.url.replace(/^https:\/\//, '');
+    who.append(name, host);
+    const stateText = document.createElement('span');
+    stateText.className = 'state';
+    const full = server.info.sessions >= server.info.maxSessions;
+    stateText.textContent = server.url === current ? '연결됨' : full ? '자리 없음' : `${server.info.sessions}/${server.info.maxSessions}명 사용 중`;
+    item.append(dot, who, stateText);
+    item.addEventListener('click', () => {
+      if (server.url !== current) chooseServer(server.url);
+    });
+    list.append(item);
+  }
+  empty.hidden = !!(servers && servers.length);
+  empty.textContent = servers === null ? '서버 목록을 불러오지 못했습니다. 잠시 뒤 새로고침을 눌러 보세요.' : '지금 켜져 있는 서버가 없습니다. PC에서 start-server-anywhere를 실행하면 1분 안에 여기에 나타납니다.';
+
+  // Nothing usable selected (never chosen, or the saved address stopped working because tunnel
+  // addresses change on every start): if exactly one server is on, use it without asking.
+  const usable = state.serverInfo && state.serverInfo.emulation;
+  if (!usable && servers && servers.length === 1 && !state.playing && !autoChosen.has(servers[0].url)) {
+    autoChosen.add(servers[0].url);
+    chooseServer(servers[0].url);
   }
 }
 
@@ -1150,6 +1217,7 @@ function bindUI() {
     initServerMode();
   };
   $('btn-server-url').addEventListener('click', saveServerUrl);
+  $('btn-server-refresh').addEventListener('click', refreshServerList);
   $('server-url').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();

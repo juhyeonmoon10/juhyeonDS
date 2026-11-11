@@ -20,12 +20,12 @@ export function serverBaseUrl() {
 }
 
 /** Asks the server whether it offers emulation. Resolves to null when there is no server. */
-export async function probeServer() {
-  if (location.protocol === 'file:' && !(window.MELONDS_CONFIG && window.MELONDS_CONFIG.serverUrl)) return null;
+export async function probeServer(base) {
+  if (!base && location.protocol === 'file:' && !(window.MELONDS_CONFIG && window.MELONDS_CONFIG.serverUrl)) return null;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4000);
+  const timer = setTimeout(() => controller.abort(), base ? 6000 : 4000);
   try {
-    const res = await fetch(serverBaseUrl() + '/api/info', { signal: controller.signal, cache: 'no-store' });
+    const res = await fetch((base || serverBaseUrl()) + '/api/info', { signal: controller.signal, cache: 'no-store' });
     if (!res.ok) return null;
     const info = await res.json();
     return info && info.name === 'juhyeonds' ? info : null;
@@ -34,6 +34,48 @@ export async function probeServer() {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Lists the servers that are switched on right now.
+ * Servers started with --tunnel post their address to a public bulletin board (see server/announce.js);
+ * this reads the recent posts and keeps the servers that actually answer.
+ * Resolves to [{url, name, info}] (possibly empty), or null when the feature is off or the board is unreachable.
+ */
+export async function discoverServers() {
+  const config = window.MELONDS_CONFIG || {};
+  const topic = config.serverDirectory || '';
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(topic)) return null;
+  const host = (config.serverDirectoryHost || 'https://ntfy.sh').replace(/\/+$/, '');
+  let text;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(`${host}/${topic}/json?poll=1&since=25m`, { signal: controller.signal, cache: 'no-store' });
+    if (!res.ok) return null;
+    text = await res.text();
+  } catch (err) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  // Newest post per address wins; an "off" post removes the server.
+  const latest = new Map();
+  for (const line of text.split('\n')) {
+    try {
+      const post = JSON.parse(line);
+      if (post.event !== 'message') continue;
+      const entry = JSON.parse(post.message);
+      const url = new URL(String(entry.u));
+      if (url.protocol !== 'https:' || url.origin !== String(entry.u)) continue;
+      latest.set(url.origin, { url: url.origin, name: String(entry.n || '').slice(0, 40) || url.hostname, off: !!entry.off });
+    } catch (err) {
+      /* not one of ours */
+    }
+  }
+  const candidates = [...latest.values()].filter((s) => !s.off).slice(-8);
+  const checked = await Promise.all(candidates.map(async (s) => ({ url: s.url, name: s.name, info: await probeServer(s.url) })));
+  return checked.filter((s) => s.info && s.info.emulation);
 }
 
 /** SHA-256 of a byte array as lowercase hex, without the Web Crypto API (which plain-http pages lack). */
