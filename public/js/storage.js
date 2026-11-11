@@ -5,6 +5,7 @@
 
 const DB_NAME = 'juhyeonds';
 const STORE = 'saves';
+const FILES = 'files'; // small system files such as user-supplied BIOS images
 let dbPromise = null;
 
 function openDB() {
@@ -14,9 +15,11 @@ function openDB() {
       reject(new Error('이 브라우저는 저장소(IndexedDB)를 지원하지 않습니다'));
       return;
     }
-    const req = indexedDB.open(DB_NAME, 1);
+    const req = indexedDB.open(DB_NAME, 2);
     req.onupgradeneeded = () => {
-      req.result.createObjectStore(STORE, { keyPath: 'id' });
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(FILES)) db.createObjectStore(FILES, { keyPath: 'id' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error || new Error('저장소를 열 수 없습니다'));
@@ -28,12 +31,12 @@ function openDB() {
   return dbPromise;
 }
 
-function run(mode, fn) {
+function run(mode, fn, storeName) {
   return openDB().then(
     (db) =>
       new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, mode);
-        const req = fn(tx.objectStore(STORE));
+        const tx = db.transaction(storeName || STORE, mode);
+        const req = fn(tx.objectStore(storeName || STORE));
         let result;
         if (req) req.onsuccess = () => (result = req.result);
         tx.oncomplete = () => resolve(result);
@@ -60,6 +63,21 @@ export function listSaves() {
   return run('readonly', (store) => store.getAll()).then((rows) =>
     (rows || []).sort((a, b) => b.updated - a.updated)
   );
+}
+
+/** @returns {Promise<{arm9: Uint8Array, arm7: Uint8Array}|null>} */
+export function getBios() {
+  return run('readonly', (store) => store.get('bios'), FILES).then((row) =>
+    row && row.arm9 && row.arm7 ? { arm9: row.arm9, arm7: row.arm7 } : null
+  );
+}
+
+export function putBios(arm9, arm7) {
+  return run('readwrite', (store) => store.put({ id: 'bios', arm9, arm7 }), FILES);
+}
+
+export function deleteBios() {
+  return run('readwrite', (store) => store.delete('bios'), FILES);
 }
 
 /** Asks the browser not to evict our data when storage runs low. Best effort. */

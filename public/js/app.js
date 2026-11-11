@@ -24,7 +24,10 @@ const STOP_REASONS = {
 };
 
 const state = {
-  rom: null, // { name, blob, id, title, code, source }
+  rom: null, // { name, blob, id, title, code, source, encrypted }
+  bios: null, // { arm9, arm7 } user-supplied console BIOS, or null for the built-in FreeBIOS
+  slowSeconds: 0,
+  slowToastShown: false,
   save: null, // { name, data: Uint8Array, source: 'file' | 'drive' }
   autosave: null, // IndexedDB record for the selected ROM
   mode: 'local',
@@ -178,7 +181,16 @@ async function setRom(name, blob, source) {
   const crc = head[0x15e] | (head[0x15f] << 8);
   const id = `${code || 'NONE'}-${title || 'UNTITLED'}-${crc.toString(16).padStart(4, '0')}`;
 
-  state.rom = { name, blob, id, title, code, source };
+  // An encrypted dump has no E7FFDEFF marker at the start of its secure area.
+  const dv = new DataView(head.buffer);
+  const arm9off = dv.getUint32(0x20, true);
+  let encrypted = false;
+  if (arm9off >= 0x4000 && arm9off < 0x8000 && code !== '####' && blob.size >= arm9off + 4) {
+    const marker = new DataView(await blob.slice(arm9off, arm9off + 4).arrayBuffer()).getUint32(0, true);
+    encrypted = marker !== 0xe7ffdeff;
+  }
+
+  state.rom = { name, blob, id, title, code, source, encrypted };
   try {
     state.autosave = (await storage.getSave(id)) || null;
   } catch (err) {
@@ -241,6 +253,13 @@ function renderHome() {
     saveName.textContent = '선택 안 함';
     saveName.classList.add('empty');
     $('save-hint').textContent = '.sav 파일 · 없으면 새 세이브를 만들어 시작합니다';
+  }
+  const warn = $('rom-warning');
+  const blocked = !!(state.rom && state.rom.encrypted && !state.bios);
+  warn.hidden = !blocked;
+  if (blocked) {
+    warn.textContent =
+      '이 ROM은 암호화된 덤프라서 그대로는 실행되지 않습니다(흰 화면에서 멈춤). 복호화된(decrypted) 덤프를 쓰거나, 설정에서 DS BIOS 파일을 등록하면 실행할 수 있습니다.';
   }
   $('btn-save-clear').hidden = !state.save;
   $('autosave-row').hidden = !useAutosave;
@@ -383,7 +402,9 @@ function flashHud(text) {
 }
 function renderHud() {
   const parts = [];
-  if (settings.showFps && hudStats) parts.push(hudStats);
+  const slow = state.slowSeconds >= 3;
+  if ((settings.showFps || slow) && hudStats) parts.push((slow ? '느림 · ' : '') + hudStats);
+  $('hud').classList.toggle('slow', slow);
   if (hudFlash) parts.push(hudFlash);
   $('hud-text').textContent = parts.join(' · ');
   $('hud').style.display = parts.length ? '' : 'none';
@@ -412,10 +433,26 @@ async function startGame() {
       hudStats =
         `${s.fps.toFixed(0)}fps` +
         (mode === 'server' ? ` · 서버${s.ping != null ? ' ' + Math.round(s.ping) + 'ms' : ''}` : ` · ${Math.round(s.load * 100)}%`);
+      // Below full speed the game itself runs in slow motion, which looks like endless loading.
+      state.slowSeconds = s.fps < 54 ? state.slowSeconds + 1 : 0;
+      if (state.slowSeconds === 5 && !state.slowToastShown) {
+        state.slowToastShown = true;
+        toast(
+          mode === 'server'
+            ? '서버가 게임을 제 속도로 돌리지 못하고 있습니다. 게임이 느리게 진행됩니다.'
+            : `이 기기 성능으로는 게임이 제 속도(60fps)로 돌지 않습니다 (현재 ${s.fps.toFixed(0)}fps). 로딩과 진행이 그만큼 느려집니다.`
+        );
+      }
       renderHud();
     };
     backend.onError = (text) => {
       endGame(false).then(() => message('게임이 중단되었습니다', text + ' 마지막으로 저장된 세이브는 이 브라우저에 보관되어 있습니다.'));
+    };
+    backend.onCrashed = () => {
+      message(
+        '게임이 실행 중 멈췄습니다',
+        '게임 프로그램이 잘못된 명령을 반복 실행하고 있습니다. 로딩 중이 아니라 멈춘 상태입니다. ROM 파일이 손상되었거나, 이 에뮬레이터의 내장 BIOS와 맞지 않는 게임일 수 있습니다. 설정에서 DS BIOS 파일을 등록하면 해결되는 경우가 있습니다.'
+      );
     };
     backend.onStopped = (reason) => {
       message('게임이 멈췄습니다', STOP_REASONS[reason] || '에뮬레이터가 실행을 멈췄습니다.');
@@ -426,6 +463,7 @@ async function startGame() {
       rom: state.rom.blob,
       save,
       sampleRate: audio.sampleRate,
+      bios: state.bios,
       language: Number(settings.language),
       datetime: [now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds()],
       streamDivider: Number(settings.streamDivider),
@@ -457,6 +495,8 @@ function enterPlayer() {
   state.hiddenPaused = false;
   state.lidClosed = false;
   hudStats = '';
+  state.slowSeconds = 0;
+  state.slowToastShown = false;
   $('home').hidden = true;
   $('player').hidden = false;
   $('paused-badge').hidden = true;
@@ -620,7 +660,15 @@ function openSettings() {
   $('s-streamfps').value = String(settings.streamDivider);
   $('s-showfps').checked = !!settings.showFps;
   $('s-driveauto').checked = !!settings.driveAutoSync;
+  renderBios();
   $('dlg-settings').showModal();
+}
+
+function renderBios() {
+  const on = !!state.bios;
+  $('bios-status').textContent = on ? '등록됨' : '등록 안 됨 (내장 FreeBIOS 사용)';
+  $('bios-status').classList.toggle('ok', on);
+  $('btn-bios-clear').hidden = !on;
 }
 
 function bindSettings() {
@@ -649,6 +697,39 @@ function bindSettings() {
     audio.setVolume(settings.volume / 100);
   });
   $('s-close').addEventListener('click', () => $('dlg-settings').close());
+
+  $('btn-bios').addEventListener('click', () => $('file-bios').click());
+  $('file-bios').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    // The two images are told apart by size: ARM9 is 4 KB, ARM7 is 16 KB.
+    const arm9 = files.find((f) => f.size === 0x1000);
+    const arm7 = files.find((f) => f.size === 0x4000);
+    if (!arm9 || !arm7) {
+      toast('bios9.bin(4,096바이트)과 bios7.bin(16,384바이트) 두 파일을 함께 선택해 주세요.', 'error');
+      return;
+    }
+    try {
+      const bios = { arm9: new Uint8Array(await arm9.arrayBuffer()), arm7: new Uint8Array(await arm7.arrayBuffer()) };
+      await storage.putBios(bios.arm9, bios.arm7);
+      state.bios = bios;
+      renderBios();
+      renderHome();
+      toast('BIOS 파일을 등록했습니다.' + (state.playing ? ' 다음에 게임을 시작할 때 적용됩니다.' : ''));
+    } catch (err) {
+      toast('BIOS 파일을 저장하지 못했습니다: ' + err.message, 'error');
+    }
+  });
+  $('btn-bios-clear').addEventListener('click', async () => {
+    try {
+      await storage.deleteBios();
+    } catch (err) {
+      /* nothing stored */
+    }
+    state.bios = null;
+    renderBios();
+    renderHome();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1107,6 +1188,14 @@ renderDriveStatus();
 renderLocalSaves();
 renderHud();
 initServerMode();
+storage
+  .getBios()
+  .then((bios) => {
+    state.bios = bios;
+    renderBios();
+    renderHome();
+  })
+  .catch(() => {});
 if (googleClientId()) preloadGIS();
 
 // Hook for automated tests.

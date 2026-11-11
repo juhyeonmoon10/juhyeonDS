@@ -6,6 +6,8 @@
 const FB_BYTES = 256 * 192 * 2 * 4;
 const MSG_ROM_CHUNK = 0x01;
 const MSG_SAVE_CHUNK = 0x02;
+const MSG_BIOS9 = 0x03;
+const MSG_BIOS7 = 0x04;
 const MSG_INPUT = 0x10;
 const MSG_VIDEO = 0x20;
 const MSG_AUDIO = 0x21;
@@ -54,7 +56,7 @@ export class RemoteBackend {
     this.pingSent = new Map();
     this.pingId = 0;
     this.lastStats = { fps: 0, load: 0 };
-    this.onFrame = this.onAudio = this.onSave = this.onStats = this.onError = this.onStopped = () => {};
+    this.onFrame = this.onAudio = this.onSave = this.onStats = this.onError = this.onStopped = this.onCrashed = () => {};
   }
 
   start(opts) {
@@ -64,11 +66,11 @@ export class RemoteBackend {
 
     return new Promise((resolve, reject) => {
       let settled = false;
-      const failStart = (message) => {
+      const failStart = (message, code) => {
         if (settled) return;
         settled = true;
         this.stop();
-        reject(new Error(message));
+        reject(Object.assign(new Error(message), { code: code || '' }));
       };
 
       progress('서버에 연결 중…', null);
@@ -88,6 +90,7 @@ export class RemoteBackend {
             t: 'start',
             romSize: opts.rom.size,
             saveSize: opts.save ? opts.save.length : 0,
+            bios: !!opts.bios,
             sampleRate: opts.sampleRate,
             language: opts.language,
             datetime: opts.datetime,
@@ -130,8 +133,11 @@ export class RemoteBackend {
           case 'stopped':
             this.onStopped(m.reason);
             break;
+          case 'crashed':
+            this.onCrashed();
+            break;
           case 'error':
-            if (!settled) failStart(m.message || '서버 오류');
+            if (!settled) failStart(m.message || '서버 오류', m.code);
             else this.onError(m.message || '서버 오류');
             break;
         }
@@ -172,6 +178,14 @@ export class RemoteBackend {
         const msg = new Uint8Array(part.length + 1);
         msg[0] = MSG_SAVE_CHUNK;
         msg.set(part, 1);
+        ws.send(msg);
+      }
+    }
+    if (opts.bios) {
+      for (const [type, data] of [[MSG_BIOS9, opts.bios.arm9], [MSG_BIOS7, opts.bios.arm7]]) {
+        const msg = new Uint8Array(data.length + 1);
+        msg[0] = type;
+        msg.set(data, 1);
         ws.send(msg);
       }
     }

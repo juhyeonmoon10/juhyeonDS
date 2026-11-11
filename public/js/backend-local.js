@@ -17,7 +17,7 @@ export class LocalBackend {
     this.worker = null;
     this.pending = new Map();
     this.nextId = 1;
-    this.onFrame = this.onAudio = this.onSave = this.onStats = this.onError = this.onStopped = () => {};
+    this.onFrame = this.onAudio = this.onSave = this.onStats = this.onError = this.onStopped = this.onCrashed = () => {};
   }
 
   async start(opts) {
@@ -65,8 +65,11 @@ export class LocalBackend {
           case 'stopped':
             this.onStopped(m.reason);
             break;
+          case 'crashed':
+            this.onCrashed();
+            break;
           case 'error':
-            if (!started) reject(new Error(m.message));
+            if (!started) reject(Object.assign(new Error(m.message), { code: m.code }));
             else this.onError(m.message);
             break;
         }
@@ -80,6 +83,8 @@ export class LocalBackend {
           sampleRate: opts.sampleRate,
           language: opts.language,
           datetime: opts.datetime,
+          bios9: opts.bios ? opts.bios.arm9.slice().buffer : null,
+          bios7: opts.bios ? opts.bios.arm7.slice().buffer : null,
         },
         transfer
       );

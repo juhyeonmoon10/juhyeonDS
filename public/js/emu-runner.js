@@ -69,6 +69,19 @@
       M.HEAPU8.set(save, savePtr);
     }
 
+    // Optional console BIOS images (both required together).
+    var b9 = opts.bios9, b7 = opts.bios7;
+    if (b9 && b7 && b9.length === 0x1000 && b7.length === 0x4000) {
+      var p9 = M._mds_alloc(b9.length), p7 = M._mds_alloc(b7.length);
+      M.HEAPU8.set(b9, p9);
+      M.HEAPU8.set(b7, p7);
+      M._mds_set_bios(p9, p7);
+      M._mds_free(p9);
+      M._mds_free(p7);
+    } else {
+      M._mds_set_bios(0, 0);
+    }
+
     M._mds_config(opts.sampleRate || 48000, opts.language == null ? 1 : opts.language);
     var d = opts.datetime || [2026, 1, 1, 12, 0, 0];
     M._mds_set_datetime(d[0], d[1], d[2], d[3], d[4], d[5]);
@@ -77,10 +90,16 @@
     var result = M._mds_load(romPtr, rom.length, savePtr, saveLen);
     if (savePtr) M._mds_free(savePtr);
     if (result === -1 || result === -3) throw new Error('올바른 NDS ROM 파일이 아닙니다. 파일이 손상되었거나 다른 형식일 수 있습니다.');
+    if (result === -4) {
+      var err = new Error('이 ROM은 암호화된 덤프라서 내장 BIOS로는 실행할 수 없습니다. 복호화된(decrypted) 덤프를 사용하거나, 설정에서 본인 DS의 BIOS 파일(bios9.bin, bios7.bin)을 등록해 주세요.');
+      err.code = 'encrypted';
+      throw err;
+    }
     if (result !== 0) throw new Error('ROM을 불러올 수 없습니다 (코드 ' + result + ')');
 
     this.loaded = true;
     this.saveDirtyAt = 0;
+    this.crashReported = false;
     return { saveLen: M._mds_save_len() };
   };
 
@@ -112,6 +131,7 @@
 
   EmuRunner.prototype.reset = function () {
     if (!this.loaded) return;
+    this.crashReported = false;
     this.M._mds_reset();
   };
 
@@ -168,6 +188,12 @@
     this.statFrames++;
     this.statBusy += t1 - t0;
     if (t1 - this.statSince >= 1000) {
+      // Games never execute undefined instructions on purpose. Once one has happened the
+      // game has crashed (typically hanging on a white screen); it is not loading.
+      if (!this.crashReported && M._mds_fault_count() > 0) {
+        this.crashReported = true;
+        if (this.cb.onCrash) this.cb.onCrash();
+      }
       var span = t1 - this.statSince;
       if (this.cb.onStats) {
         this.cb.onStats({

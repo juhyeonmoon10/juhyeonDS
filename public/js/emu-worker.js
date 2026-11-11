@@ -9,7 +9,7 @@ importScripts('../core/melonds.js', 'emu-runner.js');
 let runner = null;
 
 function fail(err) {
-  postMessage({ t: 'error', message: String((err && err.message) || err) });
+  postMessage({ t: 'error', message: String((err && err.message) || err), code: (err && err.code) || '' });
 }
 
 async function load(msg) {
@@ -39,12 +39,17 @@ async function load(msg) {
     onStop(reason) {
       postMessage({ t: 'stopped', reason });
     },
+    onCrash() {
+      postMessage({ t: 'crashed' });
+    },
   });
 
   const info = runner.load(new Uint8Array(msg.rom), msg.save ? new Uint8Array(msg.save) : null, {
     sampleRate: msg.sampleRate,
     language: msg.language,
     datetime: msg.datetime,
+    bios9: msg.bios9 ? new Uint8Array(msg.bios9) : null,
+    bios7: msg.bios7 ? new Uint8Array(msg.bios7) : null,
   });
   postMessage({ t: 'loaded', saveLen: info.saveLen });
   runner.start();
