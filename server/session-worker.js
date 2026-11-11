@@ -95,12 +95,15 @@ async function load(msg) {
     onSave,
     onStats: (s) => sendJSON({ t: 'stats', fps: s.fps, load: s.load }),
     onStop: (reason) => sendJSON({ t: 'stopped', reason }),
+    onCrash: () => sendJSON({ t: 'crashed' }),
   });
   fpsDivider = msg.fpsDivider === 2 ? 2 : 1;
   const info = runner.load(new Uint8Array(msg.rom), msg.save ? new Uint8Array(msg.save) : null, {
     sampleRate: msg.sampleRate,
     language: msg.language,
     datetime: msg.datetime,
+    bios9: msg.bios9 ? new Uint8Array(msg.bios9) : null,
+    bios7: msg.bios7 ? new Uint8Array(msg.bios7) : null,
   });
   sendJSON({ t: 'loaded', saveLen: info.saveLen });
   needKeyframe = true;
@@ -111,7 +114,7 @@ parentPort.on('message', (msg) => {
   try {
     switch (msg.t) {
       case 'load':
-        load(msg).catch((err) => sendJSON({ t: 'error', message: String(err.message || err) }));
+        load(msg).catch((err) => sendJSON({ t: 'error', message: String(err.message || err), code: err.code || '' }));
         break;
       case 'input':
         if (runner) runner.setInput(msg.keys, msg.touching, msg.x, msg.y);

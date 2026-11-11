@@ -145,6 +145,8 @@ function handleRequest(req, res) {
 // ---------------------------------------------------------------------------
 const MSG_ROM_CHUNK = 0x01;
 const MSG_SAVE_CHUNK = 0x02;
+const MSG_BIOS9 = 0x03;
+const MSG_BIOS7 = 0x04;
 const MSG_INPUT = 0x10;
 const MSG_VIDEO = 0x20;
 const HIGH_WATER = 2 * 1024 * 1024; // pause video when this much is queued for a slow client
@@ -168,6 +170,8 @@ class Session {
     this.romBytes = 0;
     this.saveChunks = [];
     this.saveBytes = 0;
+    this.bios9 = null;
+    this.bios7 = null;
     this.videoPaused = false;
     this.awaitingKeyframe = false;
     this.closed = false;
@@ -214,6 +218,7 @@ class Session {
           language: Math.min(5, Math.max(0, Number(msg.language) | 0)),
           datetime: Array.isArray(msg.datetime) ? msg.datetime.slice(0, 6).map((n) => Number(n) | 0) : null,
           fpsDivider: msg.fpsDivider === 2 ? 2 : 1,
+          bios: !!msg.bios,
         };
         this.send({ t: 'upload' });
         break;
@@ -264,6 +269,10 @@ class Session {
       this.saveBytes += buf.length - 1;
       if (this.saveBytes > this.expect.saveSize) throw new Error('세이브 데이터가 예고된 크기보다 큽니다');
       this.saveChunks.push(buf.subarray(1));
+    } else if (type === MSG_BIOS9 && this.expect.bios && buf.length === 0x1001) {
+      this.bios9 = Uint8Array.from(buf.subarray(1)).buffer;
+    } else if (type === MSG_BIOS7 && this.expect.bios && buf.length === 0x4001) {
+      this.bios7 = Uint8Array.from(buf.subarray(1)).buffer;
     }
   }
 
@@ -272,6 +281,7 @@ class Session {
     if (this.worker) return;
     if (this.romBytes !== this.expect.romSize) throw new Error('ROM 업로드가 완료되지 않았습니다');
     if (this.saveBytes !== this.expect.saveSize) throw new Error('세이브 업로드가 완료되지 않았습니다');
+    if (this.expect.bios && !(this.bios9 && this.bios7)) throw new Error('BIOS 업로드가 완료되지 않았습니다');
 
     const toArrayBuffer = (chunks, total) => {
       const out = new Uint8Array(total);
@@ -302,6 +312,8 @@ class Session {
         language: this.expect.language,
         datetime: this.expect.datetime,
         fpsDivider: this.expect.fpsDivider,
+        bios9: this.bios9,
+        bios7: this.bios7,
       },
       save ? [rom, save] : [rom]
     );
