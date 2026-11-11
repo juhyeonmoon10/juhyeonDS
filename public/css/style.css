@@ -376,7 +376,7 @@ dialog.sheet p { margin: 8px 0; }
 #busy {
   position: fixed;
   inset: 0;
-  background: rgba(10, 13, 16, .78);
+  background: rgba(10, 13, 16, .93);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -393,6 +393,8 @@ dialog.sheet p { margin: 8px 0; }
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+#busy-text { margin: 0 0 2px; }
+#busy-percent { margin: 0 0 10px; font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; min-height: 1.2em; }
 .bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
 
