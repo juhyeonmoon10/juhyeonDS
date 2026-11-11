@@ -91,6 +91,15 @@
         <span id="mode-server-desc">서버 확인 중…</span>
       </button>
     </div>
+    <div class="server-url">
+      <label class="field stack"><span>서버 주소 <em>(다른 곳에 있는 서버를 쓸 때만 입력)</em></span>
+        <span class="server-url-row">
+          <input id="server-url" type="url" inputmode="url" placeholder="https://xxxx.trycloudflare.com" autocomplete="off" spellcheck="false">
+          <button id="btn-server-url" class="btn small" type="button">연결</button>
+        </span>
+      </label>
+      <p id="server-url-status" class="hint"></p>
+    </div>
     <label id="server-password-row" class="field" hidden>
       <span>서버 비밀번호</span>
       <input id="server-password" type="password" autocomplete="off">
@@ -109,6 +118,7 @@
       <a href="https://melonds.kuribo64.net/" target="_blank" rel="noopener">melonDS</a> 코어(GPLv3)를 WebAssembly로 빌드해 사용합니다.
       이 프로그램도 GPLv3로 배포되며 소스 코드가 함께 제공됩니다.
     </p>
+    <p><a href="privacy.html">개인정보처리방침</a></p>
     <p>본인이 소유한 게임에서 직접 추출한 ROM만 사용하세요. Nintendo와 관련이 없는 비공식 프로그램입니다.</p>
   </footer>
 </main>
