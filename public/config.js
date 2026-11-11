@@ -14,4 +14,9 @@ window.MELONDS_CONFIG = {
   // 정적 호스팅(GitHub Pages 등)에 페이지만 올리고 에뮬레이션 서버를 따로 둘 때 지정하세요.
   // 예: "https://ds.example.com"
   serverUrl: "",
+
+  // 켜져 있는 서버 목록에 쓰는 게시판 이름(ntfy.sh 토픽).
+  // start-server-anywhere로 켠 서버가 자기 주소를 여기에 올리고, 이 페이지는 그것을 읽어
+  // "켜져 있는 서버" 목록을 보여 줍니다. 비워 두면 목록 기능이 꺼집니다.
+  serverDirectory: "juhyeonds-b030b4f88320",
 };

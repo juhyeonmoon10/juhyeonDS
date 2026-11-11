@@ -97,13 +97,21 @@
       </button>
     </div>
     <div class="server-url">
-      <label class="field stack"><span>서버 주소 <em>(다른 곳에 있는 서버를 쓸 때만 입력)</em></span>
+      <label class="field stack"><span>서버 주소 <em>(아래 목록에서 고르면 입력하지 않아도 됩니다)</em></span>
         <span class="server-url-row">
           <input id="server-url" type="url" inputmode="url" placeholder="https://xxxx.trycloudflare.com" autocomplete="off" spellcheck="false">
           <button id="btn-server-url" class="btn small" type="button">연결</button>
         </span>
       </label>
       <p id="server-url-status" class="hint"></p>
+      <div id="server-list-box" hidden>
+        <div class="server-list-head">
+          <span>켜져 있는 서버</span>
+          <button id="btn-server-refresh" class="btn small" type="button">새로고침</button>
+        </div>
+        <div id="server-list"></div>
+        <p id="server-list-empty" class="hint" hidden></p>
+      </div>
     </div>
     <label id="server-password-row" class="field" hidden>
       <span>서버 비밀번호</span>
