@@ -4,6 +4,7 @@
  *
  *   node server/server.js [--port 8080] [--host 127.0.0.1] [--public] [--password SECRET] [--open]
  *                         [--max-sessions 4] [--no-emulation] [--cert cert.pem --key key.pem]
+ *                         [--tunnel]   make the server reachable from other networks
  *
  * Environment variables PORT, HOST, PASSWORD, MAX_SESSIONS, TLS_CERT, TLS_KEY work too.
  * Licensed under the GNU General Public License v3 or later.
@@ -437,6 +438,36 @@ server.listen(PORT, HOST, () => {
   console.log(`  서버 에뮬레이션: ${EMULATION ? `켜짐 (동시 ${MAX_SESSIONS}세션${PASSWORD ? ', 비밀번호 사용' : ''})` : '꺼짐'}`);
   console.log('  종료하려면 Ctrl+C');
   console.log('');
+
+  if (args.tunnel) {
+    require('./tunnel')
+      .startTunnel(PORT, (line) => console.log(line))
+      .then((tunnel) => {
+        let site = '';
+        try {
+          site = require('../package.json').homepage || '';
+        } catch (err) {
+          /* optional */
+        }
+        console.log('');
+        console.log('  ★ 다른 네트워크에서 접속할 수 있습니다');
+        console.log('  ------------------------------------------');
+        console.log(`  어디서나 접속:   ${tunnel.url}`);
+        if (site) {
+          console.log('  Google Drive까지 쓰려면 아래 주소로 접속하세요 (서버가 자동으로 연결됩니다):');
+          console.log(`    ${site}?server=${tunnel.url}`);
+        }
+        console.log('  이 주소는 서버를 켤 때마다 바뀝니다. 주소를 아는 사람은 누구나 접속할 수 있으니');
+        console.log('  필요하면 --password 옵션으로 비밀번호를 거세요.');
+        console.log('');
+      })
+      .catch((err) => {
+        console.error('');
+        console.error('  [오류] 외부 접속을 켜지 못했습니다: ' + err.message);
+        console.error('  같은 네트워크에서는 위 주소로 계속 사용할 수 있습니다.');
+        console.error('');
+      });
+  }
 
   if (args.open) {
     const url = `${scheme}://localhost:${PORT}`;
