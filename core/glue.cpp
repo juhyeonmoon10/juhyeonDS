@@ -396,13 +396,17 @@ EMSCRIPTEN_KEEPALIVE int mds_run_frame(u32 keys, int touching, int tx, int ty)
     }
 
     g_nds->RunFrame();
-    ConvertFramebuffer();
+    // A skipped frame leaves the previous picture in place.
+    if (!melonDS::SkipRender) ConvertFramebuffer();
 
     int avail = g_nds->SPU.GetOutputSize();
     if (avail > kAudioMax) avail = kAudioMax;
     if (avail <= 0) return 0;
     return g_nds->SPU.ReadOutput(g_audio, avail);
 }
+
+// Frame skip: 1 = emulate the next frames without drawing them (much cheaper), 0 = draw.
+EMSCRIPTEN_KEEPALIVE void mds_set_skip(int skip) { melonDS::SkipRender = skip != 0; }
 
 EMSCRIPTEN_KEEPALIVE u8* mds_framebuffer() { return g_fb; }
 EMSCRIPTEN_KEEPALIVE s16* mds_audio() { return g_audio; }

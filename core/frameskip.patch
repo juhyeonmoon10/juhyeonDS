@@ -1,0 +1,73 @@
+diff --git a/src/GPU.cpp b/src/GPU.cpp
+index e1c7ddc..bae453e 100644
+--- a/src/GPU.cpp
++++ b/src/GPU.cpp
+@@ -875,8 +875,14 @@ void GPU::StartFrame() noexcept
+     StartScanline(0);
+ }
+ 
++bool SkipRender = false;
++bool SkippedSinceRender = false;
++
+ void GPU::StartHBlank(u32 line) noexcept
+ {
++    // Display capture writes the picture into VRAM, so those frames must always be drawn.
++    const bool skip = SkipRender && !(GPU2D_A.CaptureCnt & (1u<<31));
++
+     DispStat[0] |= (1<<1);
+     DispStat[1] |= (1<<1);
+ 
+@@ -884,14 +890,14 @@ void GPU::StartHBlank(u32 line) noexcept
+     {
+         // draw
+         // note: this should start 48 cycles after the scanline start
+-        if (line < 192)
++        if (line < 192 && !skip)
+         {
+             GPU2D_Renderer->DrawScanline(line, &GPU2D_A);
+             GPU2D_Renderer->DrawScanline(line, &GPU2D_B);
+         }
+ 
+         // sprites are pre-rendered one scanline in advance
+-        if (line < 191)
++        if (line < 191 && !skip)
+         {
+             GPU2D_Renderer->DrawSprites(line+1, &GPU2D_A);
+             GPU2D_Renderer->DrawSprites(line+1, &GPU2D_B);
+diff --git a/src/GPU.h b/src/GPU.h
+index fd5ad82..2161769 100644
+--- a/src/GPU.h
++++ b/src/GPU.h
+@@ -27,6 +27,10 @@
+ 
+ namespace melonDS
+ {
++// juhyeonDS frame skip: when set, the frame is emulated but not drawn (unless display capture needs the picture).
++extern bool SkipRender;
++extern bool SkippedSinceRender;
++
+ class GPU3D;
+ class ARMJIT;
+ 
+diff --git a/src/GPU3D.cpp b/src/GPU3D.cpp
+index 1204741..f138a95 100644
+--- a/src/GPU3D.cpp
++++ b/src/GPU3D.cpp
+@@ -2535,6 +2535,17 @@ void GPU3D::VBlank() noexcept
+ 
+ void GPU3D::VCount215(GPU& gpu) noexcept
+ {
++    if (SkipRender && !(gpu.GPU2D_A.CaptureCnt & (1u<<31)))
++    {
++        SkippedSinceRender = true;
++        return;
++    }
++    if (SkippedSinceRender)
++    {
++        // the scene changed while frames were skipped: the cached picture is stale
++        RenderFrameIdentical = false;
++        SkippedSinceRender = false;
++    }
+     CurrentRenderer->RenderFrame(gpu);
+ }
+ 
