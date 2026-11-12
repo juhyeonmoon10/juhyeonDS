@@ -12,6 +12,11 @@ const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const FILE_FIELDS = 'id,name,size,modifiedTime';
+// The sign-in is remembered here so that reloading the page does not ask again. Google only hands
+// a web page a one-hour key (no permanent one without a server), so what is kept is that key, when
+// it runs out, and which account to renew it for. Renewal needs no typing, only a click somewhere.
+const STORE_KEY = 'juhyeonds.drive';
+const RENEW_BEFORE_MS = 10 * 60 * 1000;
 
 let gisPromise = null;
 function loadGIS() {
@@ -46,6 +51,88 @@ export class Drive {
     this.token = '';
     this.expiresAt = 0;
     this.folderId = '';
+    this.linked = false; // the user connected Drive and has not disconnected since
+    this.hint = ''; // account e-mail, so that renewing never shows the account chooser
+    this.renewing = null;
+  }
+
+  persist() {
+    try {
+      if (!this.linked) localStorage.removeItem(STORE_KEY);
+      else {
+        localStorage.setItem(
+          STORE_KEY,
+          JSON.stringify({ clientId: this.clientId, token: this.token, expiresAt: this.expiresAt, folderId: this.folderId, hint: this.hint })
+        );
+      }
+    } catch (err) {
+      /* storage unavailable: the sign-in just lasts until the page is closed */
+    }
+  }
+
+  initClient(clientId) {
+    if (this.tokenClient && this.clientId === clientId) return;
+    this.clientId = clientId;
+    this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: SCOPE,
+      callback: () => {},
+    });
+  }
+
+  /** Picks up the sign-in remembered from an earlier visit. Resolves to true when there is one. */
+  async restore(clientId) {
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(STORE_KEY));
+    } catch (err) {
+      /* nothing usable */
+    }
+    if (!saved || saved.clientId !== clientId) return false;
+    this.clientId = clientId;
+    this.token = saved.token || '';
+    this.expiresAt = Number(saved.expiresAt) || 0;
+    this.folderId = saved.folderId || '';
+    this.hint = saved.hint || '';
+    this.linked = true;
+    this.ready = loadGIS().then(() => this.initClient(clientId));
+    this.ready.catch(() => {});
+    return true;
+  }
+
+  /** True when the one-hour key has run out or is about to. */
+  get needsRenewal() {
+    return this.linked && Date.now() > this.expiresAt - RENEW_BEFORE_MS;
+  }
+
+  /**
+   * Gets a fresh key without a consent screen. Must be called from a click or key press:
+   * Google opens a small window that closes by itself.
+   */
+  renew() {
+    if (this.renewing) return this.renewing;
+    this.renewing = (async () => {
+      if (this.ready) await this.ready;
+      if (!this.tokenClient) throw new DriveError('Google Drive에 연결되어 있지 않습니다.', 401);
+      await this.requestToken('');
+    })();
+    const done = () => {
+      this.renewing = null;
+    };
+    this.renewing.then(done, done);
+    return this.renewing;
+  }
+
+  /** Remembers which account this is (best effort). */
+  async learnAccount() {
+    if (this.hint) return;
+    try {
+      const res = await this.request(`${API}/about?fields=user(emailAddress)`);
+      this.hint = ((await res.json()).user || {}).emailAddress || '';
+      this.persist();
+    } catch (err) {
+      /* renewing still works, it may just show the account chooser */
+    }
   }
 
   get connected() {
@@ -56,15 +143,12 @@ export class Drive {
   async connect(clientId) {
     await loadGIS();
     if (!this.tokenClient || this.clientId !== clientId) {
-      this.clientId = clientId;
-      this.tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: SCOPE,
-        callback: () => {},
-      });
+      this.tokenClient = null;
+      this.initClient(clientId);
       this.folderId = '';
     }
     await this.requestToken(this.token ? '' : undefined);
+    this.learnAccount();
   }
 
   requestToken(prompt) {
@@ -80,6 +164,8 @@ export class Drive {
         }
         this.token = response.access_token;
         this.expiresAt = Date.now() + (Number(response.expires_in) - 60) * 1000;
+        this.linked = true;
+        this.persist();
         resolve();
       };
       this.tokenClient.error_callback = (err) => {
@@ -90,6 +176,7 @@ export class Drive {
       };
       const options = {};
       if (prompt !== undefined) options.prompt = prompt;
+      if (prompt === '' && this.hint) options.login_hint = this.hint;
       this.tokenClient.requestAccessToken(options);
     });
   }
@@ -105,10 +192,14 @@ export class Drive {
     this.token = '';
     this.expiresAt = 0;
     this.folderId = '';
+    this.linked = false;
+    this.hint = '';
+    this.persist();
   }
 
   async ensureToken() {
     if (this.connected) return;
+    if (this.ready) await this.ready;
     if (!this.tokenClient) throw new DriveError('Google Drive에 연결되어 있지 않습니다.', 401);
     // The one-hour access token ran out. Ask again without a consent screen.
     await this.requestToken('');
@@ -144,6 +235,7 @@ export class Drive {
     const found = (await res.json()).files || [];
     if (found.length) {
       this.folderId = found[0].id;
+      this.persist();
       return this.folderId;
     }
     const created = await this.request(`${API}/files?fields=id`, {
@@ -152,6 +244,7 @@ export class Drive {
       body: JSON.stringify({ name: this.folderName, mimeType: FOLDER_MIME }),
     });
     this.folderId = (await created.json()).id;
+    this.persist();
     return this.folderId;
   }
 

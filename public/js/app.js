@@ -604,7 +604,7 @@ function onGameSaved(data) {
   state.lastGameSave = Date.now();
   persistSave(data);
   flashHud('저장됨');
-  if (settings.driveAutoSync && drive.tokenClient) {
+  if (settings.driveAutoSync && drive.linked) {
     clearTimeout(state.driveSyncTimer);
     state.driveSyncTimer = setTimeout(() => uploadSaveToDrive(true), 4000);
   }
@@ -916,7 +916,7 @@ function bindSettings() {
       applySettings();
       if (key === 'streamDivider' && state.backend) state.backend.setStreamDivider(settings.streamDivider);
       if (key === 'language' && state.playing) toast('게임 언어는 다음에 게임을 시작할 때 적용됩니다.');
-      if (key === 'driveAutoSync' && settings.driveAutoSync && !drive.tokenClient) {
+      if (key === 'driveAutoSync' && settings.driveAutoSync && !drive.linked) {
         toast('Drive 자동 저장은 Google Drive를 연결한 뒤에 동작합니다.');
       }
     });
@@ -977,7 +977,7 @@ function googleClientId() {
 }
 
 function renderDriveStatus() {
-  const on = drive.connected || (!!drive.tokenClient && !!drive.token);
+  const on = drive.linked;
   $('drive-status').textContent = on ? '연결됨' : '연결 안 됨';
   $('drive-status').classList.toggle('ok', on);
   $('btn-drive-connect').hidden = on;
@@ -1077,6 +1077,31 @@ async function connectDrive() {
   }
 }
 
+/**
+ * Keeps the Google sign-in alive. Google gives a web page a key that lasts one hour; getting the
+ * next one needs no typing but must start from a click or key press (it opens a small window that
+ * closes by itself). So: whenever the key is about to run out, the next click on the home screen,
+ * on "start game" or on the menu button renews it. Never in the middle of play.
+ */
+let driveRenewRetryAt = 0;
+function keepDriveSignedIn() {
+  if (!drive.needsRenewal || Date.now() < driveRenewRetryAt) return;
+  drive
+    .renew()
+    .then(async () => {
+      renderDriveStatus();
+      if (state.drivePendingUpload) {
+        state.drivePendingUpload = false;
+        uploadSaveToDrive(true);
+      }
+      if (!state.playing && !state.driveFiles.length) await refreshDrive();
+    })
+    .catch(() => {
+      // Signed out of Google itself, or the window was blocked: do not nag, try again later.
+      driveRenewRetryAt = Date.now() + 5 * 60 * 1000;
+    });
+}
+
 function findDriveFile(name) {
   const lower = name.toLowerCase();
   return state.driveFiles.find((f) => f.name.toLowerCase() === lower) || null;
@@ -1169,13 +1194,14 @@ async function deleteDriveFile(file) {
 /** Sends the running game's save to Drive, replacing the previous copy with the same name. */
 async function uploadSaveToDrive(silent) {
   if (state.driveSyncing) return;
-  if (!drive.tokenClient) {
+  if (!drive.linked) {
     if (!silent) toast('먼저 처음 화면에서 Google Drive를 연결해 주세요.', 'error');
     return;
   }
   if (silent && !drive.connected) {
-    // Renewing an expired sign-in needs a click, so background sync waits for the next manual save.
-    flashHud('Drive 로그인 만료 - 메뉴에서 다시 저장하세요');
+    // Renewing the one-hour sign-in needs a click, so the upload waits until the menu is opened.
+    state.drivePendingUpload = true;
+    flashHud('Drive 저장 대기 중 - 메뉴(☰)를 열면 자동으로 올라갑니다');
     return;
   }
   state.driveSyncing = true;
@@ -1252,14 +1278,15 @@ function setFastForward(on) {
 }
 
 function openMenu() {
+  keepDriveSignedIn();
   if (!state.playing || $('dlg-menu').open) return;
   state.menuPaused = true;
   updatePause();
   $('m-pause').hidden = state.userPaused;
   $('m-fullscreen').hidden = !document.documentElement.requestFullscreen;
   $('m-fullscreen').textContent = document.fullscreenElement ? '전체 화면 끝내기' : '전체 화면';
-  $('m-save-drive').disabled = !drive.tokenClient;
-  $('m-save-drive').title = drive.tokenClient ? '' : '처음 화면에서 Google Drive를 연결하면 사용할 수 있습니다';
+  $('m-save-drive').disabled = !drive.linked;
+  $('m-save-drive').title = drive.linked ? '' : '처음 화면에서 Google Drive를 연결하면 사용할 수 있습니다';
   $('dlg-menu').showModal();
 }
 
@@ -1521,7 +1548,24 @@ storage
     renderHome();
   })
   .catch(() => {});
-if (googleClientId()) preloadGIS();
+if (googleClientId()) {
+  preloadGIS();
+  // Remembered sign-in: show Drive as connected straight away, without asking again.
+  drive.restore(googleClientId()).then((linked) => {
+    if (!linked) return;
+    renderDriveStatus();
+    if (drive.connected) refreshDrive().catch(() => {});
+  });
+  const onGesture = (event) => {
+    // Not during play, and not on a click that opens the file chooser (two windows at once).
+    if (state.playing) return;
+    const target = event.target;
+    if (target && target.closest && target.closest('input[type=file], #btn-rom, #btn-save, label.file')) return;
+    keepDriveSignedIn();
+  };
+  document.addEventListener('click', onGesture, true);
+  document.addEventListener('keydown', onGesture, true);
+}
 
 // ---------------------------------------------------------------------------
 // Installable app (PWA)
