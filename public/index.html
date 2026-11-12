@@ -221,12 +221,15 @@
         <option value="5">Español</option>
       </select>
     </label>
-    <label class="field"><span>서버 모드 화면 전송</span>
+    <label class="field"><span>최대 프레임</span>
       <select id="s-streamfps">
-        <option value="1">60fps</option>
-        <option value="2">30fps (데이터 절약)</option>
+        <option value="1">60fps (제한 없음)</option>
+        <option value="2">30fps</option>
+        <option value="3">20fps</option>
+        <option value="4">15fps</option>
       </select>
     </label>
+    <p class="hint">화면을 그리는 횟수만 줄입니다. 게임 속도는 그대로이고, 느린 기기에서는 더 빨라지며 서버 모드에서는 데이터도 줄어듭니다.</p>
     <label class="check"><input id="s-showfps" type="checkbox"><span>속도(fps) 표시</span></label>
     <label class="check"><input id="s-driveauto" type="checkbox"><span>게임이 저장될 때마다 Drive에도 자동 저장</span></label>
   </div>
