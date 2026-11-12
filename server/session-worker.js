@@ -44,8 +44,6 @@ function sendJSON(obj) {
 }
 
 function onFrame(view) {
-  frameCounter++;
-  if (fpsDivider > 1 && frameCounter % fpsDivider !== 0) return;
   if (videoPaused) {
     needKeyframe = true;
     return;
@@ -108,7 +106,7 @@ async function load(msg) {
     onStop: (reason) => sendJSON({ t: 'stopped', reason }),
     onCrash: () => sendJSON({ t: 'crashed' }),
   }, system);
-  fpsDivider = msg.fpsDivider === 2 ? 2 : 1;
+  fpsDivider = Math.max(1, Math.min(4, msg.fpsDivider | 0 || 1));
   const info = runner.load(new Uint8Array(msg.rom), msg.save ? new Uint8Array(msg.save) : null, {
     sampleRate: msg.sampleRate,
     language: msg.language,
@@ -116,6 +114,7 @@ async function load(msg) {
     bios9: msg.bios9 ? new Uint8Array(msg.bios9) : null,
     bios7: msg.bios7 ? new Uint8Array(msg.bios7) : null,
   });
+  runner.setFrameLimit(fpsDivider); // the frame limit: skipped frames are neither drawn nor sent
   FB_WORDS = runner.fbBytes / 4;
   prev = new Uint32Array(FB_WORDS);
   delta = new Uint32Array(FB_WORDS);
@@ -150,7 +149,8 @@ parentPort.on('message', (msg) => {
         if (runner) runner.setLid(!!msg.closed);
         break;
       case 'fps':
-        fpsDivider = msg.divider === 2 ? 2 : 1;
+        fpsDivider = Math.max(1, Math.min(4, msg.divider | 0 || 1));
+        if (runner) runner.setFrameLimit(fpsDivider);
         break;
       case 'speed':
         if (runner) runner.setSpeed(msg.value);

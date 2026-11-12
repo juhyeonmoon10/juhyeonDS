@@ -225,7 +225,7 @@ class Session {
           sampleRate: Math.min(96000, Math.max(8000, Number(msg.sampleRate) || 48000)),
           language: Math.min(5, Math.max(0, Number(msg.language) | 0)),
           datetime: Array.isArray(msg.datetime) ? msg.datetime.slice(0, 6).map((n) => Number(n) | 0) : null,
-          fpsDivider: msg.fpsDivider === 2 ? 2 : 1,
+          fpsDivider: Math.max(1, Math.min(4, Number(msg.fpsDivider) | 0 || 1)),
           bios: !!msg.bios,
           system: ['nds', 'gba', 'gb'].includes(msg.system) ? msg.system : 'nds',
           romHash: HASH_PATTERN.test(String(msg.romHash)) ? String(msg.romHash) : '',
@@ -249,7 +249,7 @@ class Session {
         if (this.worker) this.worker.postMessage({ t: 'lid', closed: !!msg.closed });
         break;
       case 'fps':
-        if (this.worker) this.worker.postMessage({ t: 'fps', divider: msg.divider === 2 ? 2 : 1 });
+        if (this.worker) this.worker.postMessage({ t: 'fps', divider: Math.max(1, Math.min(4, Number(msg.divider) | 0 || 1)) });
         break;
       case 'speed':
         if (this.worker) this.worker.postMessage({ t: 'speed', value: Math.max(1, Math.min(4, Number(msg.value) | 0)) });
