@@ -382,6 +382,7 @@ dialog.sheet p { margin: 8px 0; }
 #server-url-status.ok { color: var(--accent); }
 #server-url-status.bad { color: var(--danger); }
 #server-list-box { margin-top: 12px; }
+.file-list li.other .fl-main { opacity: .5; }
 .server-list-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-weight: 700; margin-bottom: 6px; }
 #server-list { display: grid; gap: 6px; }
 .server-item {
@@ -494,3 +495,5 @@ body.playing #toasts { bottom: auto; top: calc(60px + env(safe-area-inset-top));
   .toast { animation: none; }
   .btn { transition: none; }
 }
+
+#msg-body { white-space: pre-line; }
