@@ -12,6 +12,9 @@
   var MAX_SPEED = 4;
   var SAVE_SETTLE_MS = 400; // wait for a burst of save writes to finish before reporting
   var MAX_CATCH_UP = 3;
+  // Automatic frame skip: when the device cannot keep up, some frames are emulated without being
+  // drawn, which is much cheaper. Level n = draw one frame, then skip n.
+  var MAX_AUTO_SKIP = 3;
 
   function now() {
     return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -34,6 +37,9 @@
     this.fbBytes = this.width * this.height * this.screens * 4;
     this.frameMs = 1000 / this.system.fps;
     this.speed = 1;
+    this.autoSkip = 0;
+    this.minSkip = 0;
+    this.skipCount = 0;
     this.loaded = false;
     this.running = false;
     this.keys = 0;
@@ -52,6 +58,15 @@
   /** Fast-forward: emulate `speed` frames for every displayed frame (1 = normal). */
   EmuRunner.prototype.setSpeed = function (speed) {
     this.speed = Math.max(1, Math.min(MAX_SPEED, Math.round(speed) || 1));
+  };
+
+  /**
+   * Frame limit chosen by the user: draw one frame out of `divider` (1 = every frame, 2 = 30fps,
+   * 3 = 20fps, 4 = 15fps). The game itself keeps running at full speed.
+   */
+  EmuRunner.prototype.setFrameLimit = function (divider) {
+    this.minSkip = Math.max(0, Math.min(3, (Math.round(divider) || 1) - 1));
+    this.skipCount = 0;
   };
 
   EmuRunner.prototype.load = function (rom, save, opts) {
@@ -110,6 +125,8 @@
       this.fbBytes = this.width * this.height * this.screens * 4;
     }
     this.speed = 1;
+    this.autoSkip = 0;
+    this.skipCount = 0;
     this.loaded = true;
     this.saveDirtyAt = 0;
     this.crashReported = false;
@@ -177,6 +194,16 @@
   EmuRunner.prototype._runFrame = function (silent) {
     var M = this.M;
     var t0 = now();
+    // Frames nobody will see are not drawn: the extra frames of fast-forward, and frames dropped
+    // by automatic frame skip. Sound is still produced for the latter.
+    var skipped = silent;
+    var level = Math.max(this.autoSkip, this.minSkip);
+    if (!silent && level > 0) {
+      skipped = this.skipCount > 0;
+      this.skipCount = this.skipCount >= level ? 0 : this.skipCount + 1;
+    }
+    if (M._mds_set_skip) M._mds_set_skip(skipped ? 1 : 0);
+    else skipped = silent;
     var n = M._mds_run_frame(this.keys, this.touching, this.tx, this.ty);
     if (n < 0) {
       var reason = M._mds_stop_reason();
@@ -186,7 +213,7 @@
     }
 
     // While fast-forwarding only the last frame of each group is shown and heard.
-    if (!silent && this.cb.onFrame) {
+    if (!skipped && this.cb.onFrame) {
       var fb = M._mds_framebuffer();
       this.cb.onFrame(M.HEAPU8.subarray(fb, fb + this.fbBytes));
     }
@@ -209,11 +236,18 @@
         if (this.cb.onCrash) this.cb.onCrash();
       }
       var span = t1 - this.statSince;
+      var load = this.statBusy / span;
       if (this.cb.onStats) {
         this.cb.onStats({
           fps: (this.statFrames * 1000) / span,
-          load: this.statBusy / span,
+          load: load,
+          skip: this.autoSkip,
         });
+      }
+      // Busy nearly all the time = falling behind: draw fewer frames. Plenty of headroom: draw more.
+      if (this.speed === 1) {
+        if (load > 0.92 && this.autoSkip < MAX_AUTO_SKIP) this.autoSkip++;
+        else if (load < 0.6 && this.autoSkip > 0) this.autoSkip--;
       }
       this.statSince = t1;
       this.statFrames = 0;

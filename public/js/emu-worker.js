@@ -82,6 +82,7 @@ async function load(msg) {
   }, system);
 
   postMessage({ t: 'progress', stage: 'game' });
+  runner.setFrameLimit(msg.fpsDivider || 1);
   const info = runner.load(new Uint8Array(msg.rom), msg.save ? new Uint8Array(msg.save) : null, {
     sampleRate: msg.sampleRate,
     language: msg.language,
@@ -117,6 +118,9 @@ self.onmessage = (event) => {
         break;
       case 'speed':
         if (runner) runner.setSpeed(msg.value);
+        break;
+      case 'fps':
+        if (runner) runner.setFrameLimit(msg.divider);
         break;
       case 'getsave': {
         const data = runner ? runner.getSave() : new Uint8Array(0);

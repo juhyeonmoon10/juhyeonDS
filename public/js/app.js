@@ -149,6 +149,21 @@ function baseName(name) {
   return name.replace(/\.[^.\\/]+$/, '');
 }
 
+/** File name without extension, copy suffix ("name (1)") or spacing differences, for comparing. */
+function matchKey(name) {
+  return baseName(String(name || ''))
+    .normalize('NFC')
+    .toLowerCase()
+    .replace(/\s*\(\d+\)$/, '')
+    .replace(/[\s_]+/g, ' ')
+    .trim();
+}
+
+/** A save belongs to the selected game when it carries the game's file name (Game.nds ↔ Game.sav). */
+function saveMatchesRom(saveName) {
+  return !!state.rom && matchKey(saveName) === matchKey(state.rom.name);
+}
+
 function saveFileName() {
   return state.rom ? baseName(state.rom.name) + '.sav' : 'save.sav';
 }
@@ -227,6 +242,10 @@ async function setRom(name, blob, source) {
   }
 
   state.rom = { name, blob, id, title, code, source, encrypted, system };
+  if (state.save && !saveMatchesRom(state.save.name)) {
+    toast(`선택했던 세이브 “${state.save.name}”은(는) 이 게임용이 아니라서 해제했습니다.`);
+    state.save = null;
+  }
   try {
     state.autosave = (await storage.getSave(id)) || null;
   } catch (err) {
@@ -237,6 +256,10 @@ async function setRom(name, blob, source) {
 }
 
 function setSave(name, data, source) {
+  if (!state.rom) throw new Error('게임 파일(ROM)을 먼저 고른 뒤에 세이브를 선택하세요.');
+  if (!saveMatchesRom(name)) {
+    throw new Error(`“${name}”은(는) 선택한 게임의 세이브가 아닙니다. 이 게임에는 “${saveFileName()}” 이름의 세이브만 쓸 수 있습니다.`);
+  }
   if (!data.length) throw new Error('세이브 파일이 비어 있습니다.');
   state.save = { name, data, source };
   renderHome();
@@ -248,7 +271,9 @@ function clearSave() {
 }
 
 async function handleFiles(files) {
-  for (const file of files) {
+  // Game first, so that a save dropped together with its game can be checked against it.
+  const ordered = [...files].sort((a, b) => SAVE_EXT.test(a.name) - SAVE_EXT.test(b.name));
+  for (const file of ordered) {
     try {
       if (SAVE_EXT.test(file.name)) {
         setSave(file.name, new Uint8Array(await file.arrayBuffer()), 'file');
@@ -288,8 +313,12 @@ function renderHome() {
   } else {
     saveName.textContent = '선택 안 함';
     saveName.classList.add('empty');
-    $('save-hint').textContent = '.sav 파일 · 없으면 새 세이브를 만들어 시작합니다';
+    $('save-hint').textContent = state.rom
+      ? `“${saveFileName()}” 파일만 사용할 수 있습니다 · 없으면 새 세이브를 만들어 시작합니다`
+      : 'ROM을 먼저 고르면 그 게임의 세이브를 올릴 수 있습니다';
   }
+  $('btn-save').disabled = !state.rom;
+  if (state.driveFiles && state.driveFiles.length) renderDriveLists();
   const warn = $('rom-warning');
   const blocked = !!(state.rom && state.rom.encrypted && !state.bios);
   warn.hidden = !blocked;
@@ -523,7 +552,56 @@ function persistSave(data) {
     });
 }
 
+// When this game's save last left the browser (Drive upload / file download), remembered per game.
+function backupKey() {
+  return 'juhyeonds.backup.' + (state.rom ? state.rom.id : '');
+}
+function readBackupTimes() {
+  try {
+    return JSON.parse(localStorage.getItem(backupKey())) || {};
+  } catch (err) {
+    return {};
+  }
+}
+function noteBackup(kind) {
+  if (!state.rom) return;
+  const times = readBackupTimes();
+  times[kind] = Date.now();
+  try {
+    localStorage.setItem(backupKey(), JSON.stringify(times));
+  } catch (err) {
+    /* storage unavailable: the reminder just won't know */
+  }
+}
+/** "방금 전", "5분 전", "2시간 10분 전", "3일 전" */
+function timeAgo(when) {
+  const minutes = Math.floor((Date.now() - when) / 60000);
+  if (minutes < 1) return '방금 전';
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours}시간 ${minutes % 60}분 전` : `${hours}시간 전`;
+  return `${Math.floor(hours / 24)}일 전`;
+}
+/** Lines for the quit dialog: when the game last saved and when that save was last backed up. */
+function saveStatusText() {
+  const times = readBackupTimes();
+  const saved = state.lastGameSave || 0;
+  const lines = [
+    `· 게임 안에서 저장: ${saved ? timeAgo(saved) : '이번 플레이에서는 저장한 적 없음'}`,
+    `· Drive에 업로드: ${times.drive ? timeAgo(times.drive) : '한 적 없음'}`,
+    `· 이 기기에 다운로드: ${times.download ? timeAgo(times.download) : '한 적 없음'}`,
+  ];
+  const lastBackup = Math.max(times.drive || 0, times.download || 0);
+  if (saved && saved > lastBackup) {
+    lines.push('', lastBackup
+      ? '마지막 업로드/다운로드 이후에 게임에서 저장한 내용은 이 브라우저에만 있습니다.'
+      : '세이브가 이 브라우저에만 있습니다. 브라우저 데이터를 지우면 사라집니다.');
+  }
+  return lines.join('\n');
+}
+
 function onGameSaved(data) {
+  state.lastGameSave = Date.now();
   persistSave(data);
   flashHud('저장됨');
   if (settings.driveAutoSync && drive.tokenClient) {
@@ -584,7 +662,7 @@ async function startGame() {
         toast(
           mode === 'server'
             ? '서버가 게임을 제 속도로 돌리지 못하고 있습니다. 게임이 느리게 진행됩니다.'
-            : `이 기기 성능으로는 게임이 제 속도(60fps)로 돌지 않습니다 (현재 ${s.fps.toFixed(0)}fps). 로딩과 진행이 그만큼 느려집니다.`
+            : `이 기기 성능으로는 게임이 제 속도(60fps)로 돌지 않습니다 (현재 ${s.fps.toFixed(0)}fps). 로딩과 진행이 그만큼 느려집니다. 메뉴에서 종료한 뒤 ‘서버에서 실행’을 고르면 PC가 대신 돌려 줘서 빨라집니다.`
         );
       }
       renderHud();
@@ -641,6 +719,7 @@ function enterPlayer() {
   state.hiddenPaused = false;
   state.lidClosed = false;
   hudStats = '';
+  state.lastGameSave = 0;
   state.slowSeconds = 0;
   state.slowToastShown = false;
   $('home').hidden = true;
@@ -732,6 +811,7 @@ async function downloadSave() {
   }
   persistSave(data);
   downloadBytes(data, saveFileName());
+  noteBackup('download');
   toast(`${saveFileName()} 다운로드를 시작했습니다.`);
 }
 
@@ -908,7 +988,7 @@ function renderDriveStatus() {
 }
 
 function renderDriveLists() {
-  const build = (listEl, files, emptyText, onPick, selectedName) => {
+  const build = (listEl, files, emptyText, onPick, selectedName, usable) => {
     listEl.textContent = '';
     if (!files.length) {
       const li = document.createElement('li');
@@ -934,6 +1014,13 @@ function renderDriveLists() {
       pick.className = 'btn small';
       pick.textContent = '불러오기';
       pick.addEventListener('click', () => onPick(file));
+      if (usable && !usable(file)) {
+        // A save for some other game: shown, but cannot be loaded into this one.
+        li.classList.add('other');
+        pick.disabled = true;
+        pick.textContent = state.rom ? '다른 게임' : 'ROM 먼저';
+        pick.title = state.rom ? '선택한 게임의 세이브가 아닙니다' : '게임 파일을 먼저 고르세요';
+      }
 
       const del = document.createElement('button');
       del.className = 'btn ghost small danger';
@@ -947,7 +1034,7 @@ function renderDriveLists() {
   const roms = state.driveFiles.filter((f) => ROM_EXT.test(f.name) || ZIP_EXT.test(f.name));
   const saves = state.driveFiles.filter((f) => SAVE_EXT.test(f.name));
   build($('drive-roms'), roms, 'Drive에 올린 ROM이 없습니다.', pickDriveRom, state.rom && state.rom.source === 'drive' ? state.rom.name : '');
-  build($('drive-saves'), saves, 'Drive에 올린 세이브가 없습니다.', pickDriveSave, state.save && state.save.source === 'drive' ? state.save.name : '');
+  build($('drive-saves'), saves, 'Drive에 올린 세이브가 없습니다.', pickDriveSave, state.save && state.save.source === 'drive' ? state.save.name : '', (f) => saveMatchesRom(f.name));
 }
 
 async function refreshDrive() {
@@ -1105,6 +1192,7 @@ async function uploadSaveToDrive(silent) {
     const saved = await drive.upload(name, new Blob([data]), { existingId: existing && existing.id });
     state.driveFiles = state.driveFiles.filter((f) => f.id !== saved.id);
     state.driveFiles.unshift(saved);
+    noteBackup('drive');
     if (silent) flashHud('Drive에 저장됨');
     else toast(`Drive에 “${name}”을(를) 저장했습니다.`);
   } catch (err) {
@@ -1325,7 +1413,7 @@ function bindUI() {
     if ($('dlg-menu').open) $('dlg-menu').close();
   });
   $('m-exit').addEventListener('click', async () => {
-    const ok = await message('게임 종료', '게임을 끝내고 처음 화면으로 돌아갈까요? 게임 안에서 저장하지 않은 진행 상황은 사라집니다.', {
+    const ok = await message('게임 종료', '게임을 끝내고 처음 화면으로 돌아갈까요? 게임 안에서 저장하지 않은 진행 상황은 사라집니다.\n\n' + saveStatusText(), {
       confirm: true,
       okText: '종료',
     });

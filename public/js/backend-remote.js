@@ -211,7 +211,7 @@ export class RemoteBackend {
             sampleRate: opts.sampleRate,
             language: opts.language,
             datetime: opts.datetime,
-            fpsDivider: opts.streamDivider === 2 ? 2 : 1,
+            fpsDivider: Math.max(1, Math.min(4, Number(opts.streamDivider) || 1)),
           })
         );
       };

@@ -111,6 +111,7 @@ export class LocalBackend {
           datetime: opts.datetime,
           bios9: opts.bios ? opts.bios.arm9.slice().buffer : null,
           bios7: opts.bios ? opts.bios.arm7.slice().buffer : null,
+          fpsDivider: opts.streamDivider,
         },
         transfer
       );
@@ -129,7 +130,7 @@ export class LocalBackend {
   reset() { this.post({ t: 'reset' }); }
   setLid(closed) { this.post({ t: 'lid', closed }); }
   setSpeed(value) { this.post({ t: 'speed', value }); }
-  setStreamDivider() {}
+  setStreamDivider(divider) { this.post({ t: 'fps', divider }); }
 
   getSave() {
     if (!this.worker) return Promise.resolve(new Uint8Array(0));
