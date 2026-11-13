@@ -186,8 +186,36 @@ function anyDialogOpen() {
 // ---------------------------------------------------------------------------
 // File selection
 // ---------------------------------------------------------------------------
+// Largest game each console ever had (cartridge capacity). Anything bigger is not a game for it.
+const MAX_ROM_BYTES = { nds: 512 * 1024 * 1024, gba: 32 * 1024 * 1024, gb: 8 * 1024 * 1024 };
+
+/** Throws a clear message for files this emulator cannot run (other consoles, .rar/.7z, oversized). */
+function rejectUnsupportedRom(name, blob, head, system) {
+  const ext = (name.match(/\.([a-z0-9]+)$/i) || ['', ''])[1].toLowerCase();
+  const magic = (offset, text) => text.split('').every((ch, i) => head[offset + i] === ch.charCodeAt(0));
+  if (['rar', '7z'].includes(ext) || magic(0, 'Rar!') || (head[0] === 0x37 && head[1] === 0x7a && head[2] === 0xbc && head[3] === 0xaf)) {
+    throw new Error(`“${name}”은(는) .rar/.7z 압축 파일이라 열 수 없습니다. 압축을 푼 뒤 안에 있는 게임 파일(.nds, .gba, .gb, .gbc)을 올리거나 .zip으로 묶어 올리세요.`);
+  }
+  if (['3ds', 'cia', 'cci', 'cxi', '3dsx'].includes(ext) || magic(0x100, 'NCSD') || magic(0x100, 'NCCH')) {
+    throw new Error(`“${name}”은(는) 닌텐도 3DS 게임입니다. juhyeonDS는 DS · GBA · GB/GBC 게임만 실행할 수 있고 3DS는 지원하지 않습니다.`);
+  }
+  if (['nsp', 'xci', 'nsz', 'xcz'].includes(ext)) {
+    throw new Error(`“${name}”은(는) 닌텐도 스위치 게임입니다. juhyeonDS는 DS · GBA · GB/GBC 게임만 실행할 수 있습니다.`);
+  }
+  if (['iso', 'wbfs', 'rvz', 'gcm', 'wad', 'z64', 'n64', 'v64', 'nes', 'sfc', 'smc'].includes(ext)) {
+    throw new Error(`“${name}”은(는) juhyeonDS가 지원하지 않는 게임기의 파일입니다. DS · GBA · GB/GBC 게임만 실행할 수 있습니다.`);
+  }
+  const limit = MAX_ROM_BYTES[system.id];
+  if (limit && blob.size > limit) {
+    throw new Error(`“${name}”은(는) ${system.label} 게임이 아닌 것 같습니다. 파일 크기가 ${formatSize(blob.size)}인데 ${system.label} 게임은 최대 ${formatSize(limit)}입니다. 다른 게임기(예: 3DS)의 파일이 아닌지 확인하세요.`);
+  }
+}
+
 async function setRom(name, blob, source) {
   if (ZIP_EXT.test(name)) {
+    if (blob.size > 700 * 1024 * 1024) {
+      throw new Error(`“${name}”은(는) 너무 큽니다 (${formatSize(blob.size)}). DS · GBA 게임이 든 .zip이 맞는지 확인하세요.`);
+    }
     busy('압축 푸는 중…', null);
     try {
       const entries = window.fflate.unzipSync(new Uint8Array(await blob.arrayBuffer()), {
@@ -206,6 +234,7 @@ async function setRom(name, blob, source) {
   const system = Systems.forFileName(name) || Systems.get('nds');
 
   const head = new Uint8Array(await blob.slice(0, 0x200).arrayBuffer());
+  rejectUnsupportedRom(name, blob, head, system);
   const ascii = (bytes) =>
     Array.from(bytes)
       .filter((b) => b >= 0x20 && b < 0x7f)
