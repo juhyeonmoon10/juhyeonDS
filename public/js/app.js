@@ -3,7 +3,7 @@
  * Licensed under the GNU General Public License v3 or later.
  */
 import { LocalBackend } from './backend-local.js';
-import { RemoteBackend, probeServer, discoverServers } from './backend-remote.js';
+import { RemoteBackend, probeServer, discoverServers, hashBlob } from './backend-remote.js';
 import { AudioPlayer } from './audio.js';
 import { Input } from './input.js';
 import * as storage from './storage.js';
@@ -160,12 +160,12 @@ function matchKey(name) {
 }
 
 /** A save belongs to the selected game when it carries the game's file name (Game.nds ↔ Game.sav). */
-function saveMatchesRom(saveName) {
-  return !!state.rom && matchKey(saveName) === matchKey(state.rom.name);
+function saveMatchesRom(saveName, system) {
+  return !!state.rom && (!system || system === state.rom.system.id) && matchKey(saveName) === matchKey(state.rom.name);
 }
 
-function saveFileName() {
-  return state.rom ? baseName(state.rom.name) + '.sav' : 'save.sav';
+function saveFileName(rom = state.rom) {
+  return rom ? baseName(rom.name) + '.sav' : 'save.sav';
 }
 
 function downloadBytes(data, name) {
@@ -186,9 +186,6 @@ function anyDialogOpen() {
 // ---------------------------------------------------------------------------
 // File selection
 // ---------------------------------------------------------------------------
-// Largest game each console ever had (cartridge capacity). Anything bigger is not a game for it.
-const MAX_ROM_BYTES = { nds: 512 * 1024 * 1024, gba: 32 * 1024 * 1024, gb: 8 * 1024 * 1024 };
-
 /** Throws a clear message for files this emulator cannot run (other consoles, .rar/.7z, oversized). */
 function rejectUnsupportedRom(name, blob, head, system) {
   const ext = (name.match(/\.([a-z0-9]+)$/i) || ['', ''])[1].toLowerCase();
@@ -205,26 +202,32 @@ function rejectUnsupportedRom(name, blob, head, system) {
   if (['iso', 'wbfs', 'rvz', 'gcm', 'wad', 'z64', 'n64', 'v64', 'nes', 'sfc', 'smc'].includes(ext)) {
     throw new Error(`“${name}”은(는) juhyeonDS가 지원하지 않는 게임기의 파일입니다. DS · GBA · GB/GBC 게임만 실행할 수 있습니다.`);
   }
-  const limit = MAX_ROM_BYTES[system.id];
-  if (limit && blob.size > limit) {
+  const limit = system.maxRomBytes;
+  if (blob.size > limit) {
     throw new Error(`“${name}”은(는) ${system.label} 게임이 아닌 것 같습니다. 파일 크기가 ${formatSize(blob.size)}인데 ${system.label} 게임은 최대 ${formatSize(limit)}입니다. 다른 게임기(예: 3DS)의 파일이 아닌지 확인하세요.`);
   }
 }
 
-async function setRom(name, blob, source) {
+function unpackRom(archive) {
+  const worker = new Worker(new URL('./rom-worker.js', import.meta.url));
+  return new Promise((resolve, reject) => {
+    worker.onmessage = ({ data }) => {
+      if (data.error) reject(new Error(data.error));
+      else resolve(data);
+    };
+    worker.onerror = () => reject(new Error('ZIP 파일의 압축을 풀지 못했습니다.'));
+    worker.postMessage(archive);
+  }).finally(() => worker.terminate());
+}
+
+async function readRom(name, blob) {
   if (ZIP_EXT.test(name)) {
     if (blob.size > 700 * 1024 * 1024) {
       throw new Error(`“${name}”은(는) 너무 큽니다 (${formatSize(blob.size)}). DS · GBA 게임이 든 .zip이 맞는지 확인하세요.`);
     }
     busy('압축 푸는 중…', null);
     try {
-      const entries = window.fflate.unzipSync(new Uint8Array(await blob.arrayBuffer()), {
-        filter: (file) => ROM_EXT.test(file.name),
-      });
-      const inner = Object.keys(entries)[0];
-      if (!inner) throw new Error('압축 파일 안에 게임 파일(.nds, .gba, .gb, .gbc)이 없습니다.');
-      name = inner.split('/').pop();
-      blob = new Blob([entries[inner]]);
+      ({ name, blob } = await unpackRom(blob));
     } finally {
       busyOff();
     }
@@ -270,27 +273,49 @@ async function setRom(name, blob, source) {
     encrypted = marker !== 0xe7ffdeff;
   }
 
-  state.rom = { name, blob, id, title, code, source, encrypted, system };
-  if (state.save && !saveMatchesRom(state.save.name)) {
+  return { name, blob, id, title, code, encrypted, system };
+}
+
+// Hash at most one file at a time so opening several large ROMs does not read them all into memory.
+let romCacheWrites = Promise.resolve();
+function cacheRom(blob, checksum) {
+  romCacheWrites = romCacheWrites
+    .then(async () => storage.putRom(checksum || await hashBlob(blob), blob))
+    .catch(() => {}); // A full or unavailable browser cache must not prevent playing.
+}
+
+async function selectRom(rom, source, driveId) {
+  const selected = { ...rom, source, driveId };
+  state.rom = selected;
+  state.autosave = null;
+  if (state.save && !saveMatchesRom(state.save.name, state.save.system)) {
     toast(`선택했던 세이브 “${state.save.name}”은(는) 이 게임용이 아니라서 해제했습니다.`);
     state.save = null;
   }
-  try {
-    state.autosave = (await storage.getSave(id)) || null;
-  } catch (err) {
-    state.autosave = null;
-  }
+  const autosave = await storage.getSave(rom.id).catch(() => null);
+  if (state.rom !== selected) return;
+  state.autosave = autosave || null;
   renderHome();
   autoPickDriveSave().catch(() => {});
 }
 
-function setSave(name, data, source) {
+async function setLocalRom(file) {
+  const rom = await readRom(file.name, file);
+  cacheRom(file);
+  return selectRom(rom, 'file');
+}
+
+function checkSave(name, data) {
   if (!state.rom) throw new Error('게임 파일(ROM)을 먼저 고른 뒤에 세이브를 선택하세요.');
   if (!saveMatchesRom(name)) {
     throw new Error(`“${name}”은(는) 선택한 게임의 세이브가 아닙니다. 이 게임에는 “${saveFileName()}” 이름의 세이브만 쓸 수 있습니다.`);
   }
   if (!data.length) throw new Error('세이브 파일이 비어 있습니다.');
-  state.save = { name, data, source };
+}
+
+function setSave(name, data, source, driveId) {
+  checkSave(name, data);
+  state.save = { name, data, source, driveId, system: state.rom.system.id };
   renderHome();
 }
 
@@ -307,7 +332,7 @@ async function handleFiles(files) {
       if (SAVE_EXT.test(file.name)) {
         setSave(file.name, new Uint8Array(await file.arrayBuffer()), 'file');
       } else if (ROM_EXT.test(file.name) || ZIP_EXT.test(file.name)) {
-        await setRom(file.name, file, 'file');
+        await setLocalRom(file);
       } else {
         toast(`“${file.name}”은(는) 지원하지 않는 파일입니다 (.nds / .gba / .gb / .gbc / .sav)`, 'error');
       }
@@ -347,7 +372,7 @@ function renderHome() {
       : 'ROM을 먼저 고르면 그 게임의 세이브를 올릴 수 있습니다';
   }
   $('btn-save').disabled = !state.rom;
-  if (state.driveFiles && state.driveFiles.length) renderDriveLists();
+  $('btn-drive-upload-save').disabled = !state.rom;
   const warn = $('rom-warning');
   const blocked = !!(state.rom && state.rom.encrypted && !state.bios);
   warn.hidden = !blocked;
@@ -582,22 +607,22 @@ function persistSave(data) {
 }
 
 // When this game's save last left the browser (Drive upload / file download), remembered per game.
-function backupKey() {
-  return 'juhyeonds.backup.' + (state.rom ? state.rom.id : '');
+function backupKey(rom = state.rom) {
+  return 'juhyeonds.backup.' + (rom ? rom.id : '');
 }
-function readBackupTimes() {
+function readBackupTimes(rom) {
   try {
-    return JSON.parse(localStorage.getItem(backupKey())) || {};
+    return JSON.parse(localStorage.getItem(backupKey(rom))) || {};
   } catch (err) {
     return {};
   }
 }
-function noteBackup(kind) {
-  if (!state.rom) return;
-  const times = readBackupTimes();
+function noteBackup(kind, rom = state.rom) {
+  if (!rom) return;
+  const times = readBackupTimes(rom);
   times[kind] = Date.now();
   try {
-    localStorage.setItem(backupKey(), JSON.stringify(times));
+    localStorage.setItem(backupKey(rom), JSON.stringify(times));
   } catch (err) {
     /* storage unavailable: the reminder just won't know */
   }
@@ -1017,7 +1042,7 @@ function renderDriveStatus() {
 }
 
 function renderDriveLists() {
-  const build = (listEl, files, emptyText, onPick, selectedName, usable) => {
+  const build = (listEl, files, emptyText, onPick, selectedId, usable) => {
     listEl.textContent = '';
     if (!files.length) {
       const li = document.createElement('li');
@@ -1028,7 +1053,7 @@ function renderDriveLists() {
     }
     for (const file of files) {
       const li = document.createElement('li');
-      if (selectedName && selectedName === file.name) li.classList.add('sel');
+      if (selectedId === file.id) li.classList.add('sel');
       const main = document.createElement('div');
       main.className = 'fl-main';
       const name = document.createElement('span');
@@ -1036,7 +1061,8 @@ function renderDriveLists() {
       name.textContent = file.name;
       const meta = document.createElement('span');
       meta.className = 'fl-meta';
-      meta.textContent = `${formatSize(file.size)} · ${formatDate(file.modifiedTime)}`;
+      const system = Systems.get(file.system) || Systems.forFileName(file.name);
+      meta.textContent = `${system ? system.label : '기종 미분류'} · ${formatSize(file.size)} · ${formatDate(file.modifiedTime)}`;
       main.append(name, meta);
 
       const pick = document.createElement('button');
@@ -1060,10 +1086,10 @@ function renderDriveLists() {
       listEl.appendChild(li);
     }
   };
-  const roms = state.driveFiles.filter((f) => ROM_EXT.test(f.name) || ZIP_EXT.test(f.name));
-  const saves = state.driveFiles.filter((f) => SAVE_EXT.test(f.name));
-  build($('drive-roms'), roms, 'Drive에 올린 ROM이 없습니다.', pickDriveRom, state.rom && state.rom.source === 'drive' ? state.rom.name : '');
-  build($('drive-saves'), saves, 'Drive에 올린 세이브가 없습니다.', pickDriveSave, state.save && state.save.source === 'drive' ? state.save.name : '', (f) => saveMatchesRom(f.name));
+  const roms = state.driveFiles.filter((f) => f.kind === 'rom' || (!f.kind && (ROM_EXT.test(f.name) || ZIP_EXT.test(f.name))));
+  const saves = state.driveFiles.filter((f) => f.kind === 'save' || (!f.kind && SAVE_EXT.test(f.name)));
+  build($('drive-roms'), roms, 'Drive에 올린 ROM이 없습니다.', pickDriveRom, state.rom?.driveId);
+  build($('drive-saves'), saves, 'Drive에 올린 세이브가 없습니다.', pickDriveSave, state.save?.driveId, (f) => saveMatchesRom(f.name, f.system));
 }
 
 async function refreshDrive() {
@@ -1131,17 +1157,34 @@ function keepDriveSignedIn() {
     });
 }
 
-function findDriveFile(name) {
+function findDriveFile(name, kind, system) {
   const lower = name.toLowerCase();
-  return state.driveFiles.find((f) => f.name.toLowerCase() === lower) || null;
+  return state.driveFiles.find((f) => f.kind === kind && f.system === system && f.name.toLowerCase() === lower);
+}
+
+function rememberDriveFile(file) {
+  state.driveFiles = state.driveFiles.filter((entry) => entry.id !== file.id);
+  state.driveFiles.unshift(file);
+  renderDriveLists();
 }
 
 async function pickDriveRom(file) {
   try {
-    busy(`Drive에서 “${file.name}” 내려받는 중…`, 0);
-    const bytes = await drive.download(file, (f) => busy(null, f));
-    await setRom(file.name, new Blob([bytes]), 'drive');
-    toast(`“${file.name}”을(를) 불러왔습니다.`);
+    let cached;
+    if (file.sha256Checksum) {
+      busy('이 브라우저에 같은 ROM이 있는지 확인하는 중…', null);
+      await romCacheWrites;
+      cached = await storage.getRom(file.sha256Checksum).catch(() => null);
+    }
+    let blob = cached;
+    if (!blob) {
+      busy(`Drive에서 “${file.name}” 내려받는 중…`, 0);
+      blob = new Blob([await drive.download(file, (f) => busy(null, f))]);
+    }
+    const rom = await readRom(file.name, blob);
+    if (!cached) cacheRom(blob);
+    await selectRom(rom, 'drive', file.id);
+    toast(cached ? `“${file.name}”을(를) 이 브라우저에서 불러왔습니다.` : `“${file.name}”을(를) 불러왔습니다.`);
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -1151,9 +1194,12 @@ async function pickDriveRom(file) {
 
 async function pickDriveSave(file) {
   try {
+    if (!saveMatchesRom(file.name, file.system)) return;
+    const rom = state.rom;
     busy(`Drive에서 “${file.name}” 내려받는 중…`, 0);
     const bytes = await drive.download(file, (f) => busy(null, f));
-    setSave(file.name, bytes, 'drive');
+    if (state.rom !== rom) return;
+    setSave(file.name, bytes, 'drive', file.id);
     toast(`세이브 “${file.name}”을(를) 불러왔습니다.`);
   } catch (err) {
     toast(err.message, 'error');
@@ -1164,24 +1210,34 @@ async function pickDriveSave(file) {
 
 /** When a ROM is chosen and Drive holds a save with the matching name, select it automatically. */
 async function autoPickDriveSave() {
-  if (!state.rom || state.save || !drive.connected) return;
-  const match = findDriveFile(saveFileName());
+  if (!state.rom || state.save || state.starting || state.playing || !drive.connected) return;
+  const rom = state.rom;
+  const match = findDriveFile(saveFileName(rom), 'save', rom.system.id);
   if (!match) return;
   const driveTime = Date.parse(match.modifiedTime) || 0;
   if (state.autosave && state.autosave.updated > driveTime + 60000) {
     toast('Drive의 세이브보다 이 브라우저의 자동 저장이 더 최신이라, 자동 저장을 사용합니다.');
     return;
   }
-  const rom = state.rom;
   const bytes = await drive.download(match);
-  if (state.rom !== rom || state.save) return;
-  setSave(match.name, bytes, 'drive');
+  if (state.rom !== rom || state.save || state.starting || state.playing) return;
+  setSave(match.name, bytes, 'drive', match.id);
   toast(`Drive에서 세이브 “${match.name}”을(를) 찾아 선택했습니다.`);
 }
 
 async function uploadFileToDrive(file, kind) {
   try {
-    const existing = findDriveFile(file.name);
+    const rom = kind === 'rom' ? await readRom(file.name, file) : state.rom;
+    let save;
+    if (kind === 'save') {
+      if (!SAVE_EXT.test(file.name)) throw new Error('지원하는 세이브 파일(.sav, .dsv, .bak)을 고르세요.');
+      save = new Uint8Array(await file.arrayBuffer());
+      if (state.rom !== rom) return;
+      checkSave(file.name, save);
+    }
+    const system = rom.system.id;
+    state.driveFiles = await drive.list();
+    const existing = findDriveFile(file.name, kind, system);
     if (existing) {
       const ok = await message('Drive에 같은 이름의 파일이 있습니다', `“${file.name}”을(를) 새 파일로 덮어쓸까요?`, {
         confirm: true,
@@ -1190,10 +1246,14 @@ async function uploadFileToDrive(file, kind) {
       if (!ok) return;
     }
     busy(`“${file.name}”을(를) Drive에 올리는 중…`, 0);
-    await drive.upload(file.name, file, { existingId: existing && existing.id, onProgress: (f) => busy(null, f) });
-    await refreshDrive();
-    if (kind === 'rom') await setRom(file.name, file, 'drive');
-    else setSave(file.name, new Uint8Array(await file.arrayBuffer()), 'drive');
+    const uploaded = await drive.upload(file.name, file, { kind, system, existingId: existing?.id, onProgress: (f) => busy(null, f) });
+    rememberDriveFile(uploaded);
+    if (kind === 'rom') {
+      cacheRom(file, uploaded.sha256Checksum);
+      await selectRom(rom, 'drive', uploaded.id);
+    } else if (state.rom === rom) {
+      setSave(file.name, save, 'drive', uploaded.id);
+    }
     toast(`“${file.name}”을(를) Drive에 올렸습니다.`);
   } catch (err) {
     toast(err.message, 'error');
@@ -1222,7 +1282,8 @@ async function deleteDriveFile(file) {
 
 /** Sends the running game's save to Drive, replacing the previous copy with the same name. */
 async function uploadSaveToDrive(silent) {
-  if (state.driveSyncing) return;
+  const rom = state.rom;
+  if (!rom || state.driveSyncing) return;
   if (!drive.linked) {
     if (!silent) toast('먼저 처음 화면에서 Google Drive를 연결해 주세요.', 'error');
     return;
@@ -1236,18 +1297,19 @@ async function uploadSaveToDrive(silent) {
   state.driveSyncing = true;
   try {
     const data = await currentSaveData();
+    if (state.rom !== rom) return;
     if (!data.length) {
       if (!silent) toast('올릴 세이브 데이터가 없습니다.');
       return;
     }
     if (!silent) busy('세이브를 Drive에 저장하는 중…', null);
     if (!state.driveFiles.length) state.driveFiles = await drive.list();
-    const name = saveFileName();
-    const existing = findDriveFile(name);
-    const saved = await drive.upload(name, new Blob([data]), { existingId: existing && existing.id });
-    state.driveFiles = state.driveFiles.filter((f) => f.id !== saved.id);
-    state.driveFiles.unshift(saved);
-    noteBackup('drive');
+    const name = saveFileName(rom);
+    const system = rom.system.id;
+    const existing = findDriveFile(name, 'save', system);
+    const saved = await drive.upload(name, new Blob([data]), { kind: 'save', system, existingId: existing?.id });
+    rememberDriveFile(saved);
+    noteBackup('drive', rom);
     if (silent) flashHud('Drive에 저장됨');
     else toast(`Drive에 “${name}”을(를) 저장했습니다.`);
   } catch (err) {
@@ -1338,7 +1400,7 @@ function bindUI() {
       }
       if (id === 'file-rom' && files[0] && !ROM_EXT.test(files[0].name) && !ZIP_EXT.test(files[0].name)) {
         try {
-          await setRom(files[0].name, files[0], 'file');
+          await setLocalRom(files[0]);
         } catch (err) {
           toast(err.message, 'error');
         }

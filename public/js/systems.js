@@ -16,9 +16,9 @@
   };
 
   var SYSTEMS = {
-    nds: { id: 'nds', label: 'Nintendo DS', core: 'melonds', width: 256, height: 192, screens: 2, fps: 59.8261, touch: true, xy: true, exts: ['nds', 'srl', 'dsi', 'ids'] },
-    gba: { id: 'gba', label: 'Game Boy Advance', core: 'mgba', width: 240, height: 160, screens: 1, fps: 59.7275, touch: false, xy: false, exts: ['gba', 'agb'] },
-    gb: { id: 'gb', label: 'Game Boy / Color', core: 'mgba', width: 160, height: 144, screens: 1, fps: 59.7275, touch: false, xy: false, exts: ['gb', 'gbc'] },
+    nds: { id: 'nds', label: 'Nintendo DS', core: 'melonds', width: 256, height: 192, screens: 2, fps: 59.8261, touch: true, xy: true, maxRomBytes: 512 * 1024 * 1024, exts: ['nds', 'srl', 'dsi', 'ids'] },
+    gba: { id: 'gba', label: 'Game Boy Advance', core: 'mgba', width: 240, height: 160, screens: 1, fps: 59.7275, touch: false, xy: false, maxRomBytes: 32 * 1024 * 1024, exts: ['gba', 'agb'] },
+    gb: { id: 'gb', label: 'Game Boy / Color', core: 'mgba', width: 160, height: 144, screens: 1, fps: 59.7275, touch: false, xy: false, maxRomBytes: 8 * 1024 * 1024, exts: ['gb', 'gbc'] },
   };
 
   var ALL_EXTS = [];

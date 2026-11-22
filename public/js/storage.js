@@ -6,6 +6,7 @@
 const DB_NAME = 'juhyeonds';
 const STORE = 'saves';
 const FILES = 'files'; // small system files such as user-supplied BIOS images
+const ROMS = 'roms';
 let dbPromise = null;
 
 function openDB() {
@@ -15,13 +16,21 @@ function openDB() {
       reject(new Error('이 브라우저는 저장소(IndexedDB)를 지원하지 않습니다'));
       return;
     }
-    const req = indexedDB.open(DB_NAME, 2);
+    const req = indexedDB.open(DB_NAME, 3);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(FILES)) db.createObjectStore(FILES, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(ROMS)) db.createObjectStore(ROMS);
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error || new Error('저장소를 열 수 없습니다'));
     req.onblocked = () => reject(new Error('저장소가 다른 탭에서 사용 중입니다'));
   });
@@ -40,7 +49,7 @@ function run(mode, fn, storeName) {
         let result;
         if (req) req.onsuccess = () => (result = req.result);
         tx.oncomplete = () => resolve(result);
-        tx.onerror = () => reject(tx.error);
+        tx.onerror = (event) => reject(tx.error || event.target.error);
         tx.onabort = () => reject(tx.error || new Error('저장이 취소되었습니다'));
       })
   );
@@ -51,8 +60,17 @@ export function getSave(id) {
   return run('readonly', (store) => store.get(id));
 }
 
-export function putSave(id, name, title, data) {
-  return run('readwrite', (store) => store.put({ id, name, title, data, updated: Date.now() }));
+export async function putSave(id, name, title, data) {
+  const record = { id, name, title, data, updated: Date.now() };
+  const write = () => run('readwrite', (store) => store.put(record));
+  try {
+    return await write();
+  } catch (err) {
+    if (err?.name !== 'QuotaExceededError') throw err;
+    // A recoverable ROM cache should not prevent game saves from being written.
+    await run('readwrite', (store) => store.clear(), ROMS);
+    return write();
+  }
 }
 
 export function deleteSave(id) {
@@ -63,6 +81,14 @@ export function listSaves() {
   return run('readonly', (store) => store.getAll()).then((rows) =>
     (rows || []).sort((a, b) => b.updated - a.updated)
   );
+}
+
+export function getRom(checksum) {
+  return run('readonly', (store) => store.get(checksum), ROMS);
+}
+
+export function putRom(checksum, blob) {
+  return run('readwrite', (store) => store.put(blob, checksum), ROMS);
 }
 
 /** @returns {Promise<{arm9: Uint8Array, arm7: Uint8Array}|null>} */

@@ -11,7 +11,30 @@ const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
-const FILE_FIELDS = 'id,name,size,modifiedTime';
+const FILE_FIELDS = 'id,name,size,modifiedTime,sha256Checksum,parents,appProperties';
+const FOLDERS = [
+  { name: 'DS ROM', kind: 'rom', family: 'nds' },
+  { name: 'DS Save Data', kind: 'save', family: 'nds' },
+  { name: 'GBA ROM', kind: 'rom', family: 'gba' },
+  { name: 'GBA Save Data', kind: 'save', family: 'gba' },
+];
+
+function driveString(value) {
+  return "'" + value.replace(/['\\]/g, '\\$&') + "'";
+}
+
+function fileInfo(file, folder, size = 0) {
+  const system = folder && folder.family === 'gba' && file.appProperties?.system === 'gb' ? 'gb' : folder?.family;
+  return {
+    id: file.id,
+    name: file.name,
+    size: Number(file.size || size),
+    modifiedTime: file.modifiedTime,
+    sha256Checksum: file.sha256Checksum,
+    kind: folder?.kind,
+    system,
+  };
+}
 // The sign-in is remembered here so that reloading the page does not ask again. Google only hands
 // a web page a one-hour key (no permanent one without a server), so what is kept is that key, when
 // it runs out, and which account to renew it for. Renewal needs no typing, only a click somewhere.
@@ -51,6 +74,7 @@ export class Drive {
     this.token = '';
     this.expiresAt = 0;
     this.folderId = '';
+    this.folders = null;
     this.linked = false; // the user connected Drive and has not disconnected since
     this.hint = ''; // account e-mail, so that renewing never shows the account chooser
     this.renewing = null;
@@ -146,6 +170,7 @@ export class Drive {
       this.tokenClient = null;
       this.initClient(clientId);
       this.folderId = '';
+      this.folders = null;
     }
     await this.requestToken(this.token ? '' : undefined);
     this.learnAccount();
@@ -192,6 +217,7 @@ export class Drive {
     this.token = '';
     this.expiresAt = 0;
     this.folderId = '';
+    this.folders = null;
     this.linked = false;
     this.hint = '';
     this.persist();
@@ -230,40 +256,68 @@ export class Drive {
 
   async ensureFolder() {
     if (this.folderId) return this.folderId;
-    const q = `name = '${this.folderName.replace(/['\\]/g, '\\$&')}' and mimeType = '${FOLDER_MIME}' and trashed = false`;
-    const res = await this.request(`${API}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&spaces=drive`);
-    const found = (await res.json()).files || [];
-    if (found.length) {
-      this.folderId = found[0].id;
-      this.persist();
-      return this.folderId;
-    }
-    const created = await this.request(`${API}/files?fields=id`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: this.folderName, mimeType: FOLDER_MIME }),
-    });
-    this.folderId = (await created.json()).id;
+    const found = await this.listFiles(`name = ${driveString(this.folderName)} and mimeType = '${FOLDER_MIME}'`, 'id', 'createdTime');
+    this.folderId = found.length ? found[0].id : await this.createFolder(this.folderName);
     this.persist();
     return this.folderId;
   }
 
-  /** @returns {Promise<Array<{id, name, size:number, modifiedTime:string}>>} */
-  async list() {
-    const folder = await this.ensureFolder();
-    const q = `'${folder}' in parents and trashed = false`;
+  async createFolder(name, parent) {
+    const metadata = { name, mimeType: FOLDER_MIME };
+    if (parent) metadata.parents = [parent];
+    const created = await this.request(`${API}/files?fields=id`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(metadata),
+    });
+    return (await created.json()).id;
+  }
+
+  async listFiles(query, fields, order) {
+    const q = `trashed = false and (${query})`;
     const files = [];
     let pageToken = '';
     do {
       const url =
-        `${API}/files?q=${encodeURIComponent(q)}&fields=nextPageToken,files(${FILE_FIELDS})` +
-        `&orderBy=modifiedTime desc&pageSize=200&spaces=drive` +
+        `${API}/files?q=${encodeURIComponent(q)}&fields=nextPageToken,files(${fields})` +
+        `&orderBy=${encodeURIComponent(order)}&pageSize=200&spaces=drive` +
         (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
       const body = await (await this.request(url)).json();
-      for (const f of body.files || []) files.push({ id: f.id, name: f.name, size: Number(f.size || 0), modifiedTime: f.modifiedTime });
+      files.push(...(body.files || []));
       pageToken = body.nextPageToken || '';
     } while (pageToken);
     return files;
+  }
+
+  async loadFolders() {
+    const root = await this.ensureFolder();
+    const existing = await this.listFiles(`${driveString(root)} in parents and mimeType = '${FOLDER_MIME}'`, 'id,name', 'createdTime');
+    const folders = new Map();
+    for (const folder of FOLDERS) {
+      const ids = existing.filter((entry) => entry.name === folder.name).map((entry) => entry.id);
+      if (!ids.length) ids.push(await this.createFolder(folder.name, root));
+      for (const id of ids) folders.set(id, folder);
+    }
+    return { root, folders };
+  }
+
+  ensureFolders() {
+    if (!this.folders) {
+      const folders = this.loadFolders();
+      this.folders = folders;
+      folders.catch(() => {
+        if (this.folders === folders) this.folders = null;
+      });
+    }
+    return this.folders;
+  }
+
+  async list() {
+    const { root, folders } = await this.ensureFolders();
+    const parents = [root, ...folders.keys()].map((id) => `${driveString(id)} in parents`).join(' or ');
+    const files = await this.listFiles(`(${parents}) and mimeType != '${FOLDER_MIME}'`, FILE_FIELDS, 'modifiedTime desc');
+    // Keep files made before the subfolders were introduced visible in the root.
+    return files.map((file) => fileInfo(file, folders.get(file.parents?.[0])));
   }
 
   /** Downloads a file's bytes, reporting progress as a 0..1 fraction. */
@@ -292,15 +346,17 @@ export class Drive {
   }
 
   /**
-   * Uploads (or replaces, when existingId is given) a file in the app folder.
+   * Uploads or replaces a file in the folder for its kind and console.
    * @param {string} name
    * @param {Blob} blob
-   * @param {{existingId?: string, onProgress?: (fraction:number)=>void}} [opts]
+   * @param {{kind: string, system: string, existingId?: string, onProgress?: (fraction:number)=>void}} opts
    */
   async upload(name, blob, opts) {
-    opts = opts || {};
-    const folder = await this.ensureFolder();
-    const metadata = opts.existingId ? { name } : { name, parents: [folder] };
+    const { folders } = await this.ensureFolders();
+    const family = opts.system === 'nds' ? 'nds' : 'gba';
+    const [folderId, folder] = [...folders].find(([, entry]) => entry.kind === opts.kind && entry.family === family);
+    const metadata = { name, appProperties: { system: opts.system } };
+    if (!opts.existingId) metadata.parents = [folderId];
     const url = opts.existingId
       ? `${UPLOAD_API}/files/${encodeURIComponent(opts.existingId)}?uploadType=resumable&fields=${FILE_FIELDS}`
       : `${UPLOAD_API}/files?uploadType=resumable&fields=${FILE_FIELDS}`;
@@ -338,7 +394,7 @@ export class Drive {
       xhr.onerror = () => reject(new DriveError('네트워크 오류로 업로드하지 못했습니다.'));
       xhr.send(blob);
     });
-    return { id: file.id, name: file.name, size: Number(file.size || blob.size), modifiedTime: file.modifiedTime };
+    return fileInfo(file, folder, blob.size);
   }
 
   async remove(id) {

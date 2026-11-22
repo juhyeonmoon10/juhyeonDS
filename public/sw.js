@@ -5,7 +5,8 @@
  * the copy saved from the last successful visit.
  * Licensed under the GNU General Public License v3 or later.
  */
-const CACHE = 'juhyeonds-v1';
+const CACHE_PREFIX = 'juhyeonds:' + self.registration.scope + ':';
+const CACHE = CACHE_PREFIX + 'v2';
 const SHELL = [
   './',
   'index.html',
@@ -25,6 +26,7 @@ const SHELL = [
   'js/emu-runner.js',
   'js/emu-worker.js',
   'js/input.js',
+  'js/rom-worker.js',
   'js/storage.js',
   'js/systems.js',
   'js/vendor/fflate.js',
@@ -47,7 +49,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))))
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
   );
 });
@@ -57,7 +59,7 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   // Only this site's own files; never the emulation server's API or anything cross-origin.
-  if (url.origin !== self.location.origin || url.pathname.includes('/api/')) return;
+  if (!url.href.startsWith(self.registration.scope) || url.pathname.includes('/api/')) return;
 
   event.respondWith(
     fetch(request)
@@ -68,12 +70,12 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       })
-      .catch(() =>
-        caches.match(request, { ignoreSearch: true }).then((cached) => {
-          if (cached) return cached;
-          if (request.mode === 'navigate') return caches.match('index.html');
-          return Response.error();
-        })
-      )
+      .catch(async () => {
+        const cache = await caches.open(CACHE);
+        const cached = await cache.match(request, { ignoreSearch: true });
+        if (cached) return cached;
+        if (request.mode === 'navigate') return cache.match('index.html');
+        return Response.error();
+      })
   );
 });
