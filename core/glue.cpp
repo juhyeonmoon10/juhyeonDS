@@ -7,6 +7,7 @@
     version 3 of the License, or (at your option) any later version.
 */
 
+#include <array>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -44,6 +45,21 @@ bool g_stopped = false;
 int g_stopReason = 0;
 int g_logLevel = 2; // warnings and errors only
 
+constexpr int kNetFrameMax = 2048;
+constexpr int kNetReceiveMax = 1514; // Ethernet plus a 1500-byte MTU, before WifiAP adds its headers
+constexpr int kNetQueueSize = 64;
+constexpr size_t kWifiSettingsSize = sizeof(std::array<Firmware::WifiAccessPoint, 3>);
+struct NetFrame
+{
+    int length;
+    u8 bytes[kNetFrameMax];
+};
+NetFrame g_netQueue[kNetQueueSize];
+unsigned g_netRead = 0, g_netCount = 0;
+bool g_wifiEnabled = false, g_haveWifiSettings = false;
+MacAddress g_wifiMac;
+std::array<u8, kWifiSettingsSize> g_wifiSettings;
+
 // Optional console BIOS images supplied by the user (needed for encrypted ROM dumps).
 std::unique_ptr<ARM9BIOSImage> g_bios9;
 std::unique_ptr<ARM7BIOSImage> g_bios7;
@@ -52,6 +68,14 @@ std::unique_ptr<ARM7BIOSImage> g_bios7;
 // so a growing count means the game has crashed rather than being busy loading.
 u32 g_faults = 0;
 }
+
+EM_JS(void, send_net_frame, (const u8* data, int length), {
+    if (Module['onNetSend']) Module['onNetSend'](HEAPU8.subarray(data, data + length));
+});
+
+EM_JS(void, save_wifi_settings, (const u8* data, int length), {
+    if (Module['onWifiSettings']) Module['onWifiSettings'](HEAPU8.subarray(data, data + length));
+});
 
 // ---------------------------------------------------------------------------
 // Platform layer
@@ -189,7 +213,13 @@ void WriteNDSSave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen
     g_saveDirty++;
 }
 void WriteGBASave(const u8* savedata, u32 savelen, u32 writeoffset, u32 writelen, void* userdata) {}
-void WriteFirmware(const Firmware& firmware, u32 writeoffset, u32 writelen, void* userdata) {}
+void WriteFirmware(const Firmware& firmware, u32 writeoffset, u32 writelen, void* userdata)
+{
+    if (!g_wifiEnabled) return;
+    const u32 start = firmware.GetWifiAccessPointOffset();
+    if (writeoffset < start + kWifiSettingsSize && u64(writeoffset) + writelen > start)
+        save_wifi_settings(firmware.GetWifiAccessPointPosition(), kWifiSettingsSize);
+}
 void WriteDateTime(int year, int month, int day, int hour, int minute, int second, void* userdata) {}
 
 void MP_Begin(void* userdata) {}
@@ -202,8 +232,21 @@ int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata) { return 0; }
 int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata) { return 0; }
 u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata) { return 0; }
 
-int Net_SendPacket(u8* data, int len, void* userdata) { return 0; }
-int Net_RecvPacket(u8* data, void* userdata) { return 0; }
+int Net_SendPacket(u8* data, int len, void* userdata)
+{
+    if (g_wifiEnabled && len >= 14 && len <= kNetFrameMax) send_net_frame(data, len);
+    return 0;
+}
+
+int Net_RecvPacket(u8* data, void* userdata)
+{
+    if (!g_netCount) return 0;
+    const auto& frame = g_netQueue[g_netRead];
+    memcpy(data, frame.bytes, frame.length);
+    g_netRead = (g_netRead + 1) % kNetQueueSize;
+    --g_netCount;
+    return frame.length;
+}
 
 void Camera_Start(int num, void* userdata) {}
 void Camera_Stop(int num, void* userdata) {}
@@ -262,6 +305,7 @@ void ConvertFramebuffer()
 void Boot()
 {
     g_faults = 0;
+    g_netRead = g_netCount = 0;
     g_nds->Reset();
     ApplyDateTime();
     if (g_nds->NeedsDirectBoot())
@@ -308,6 +352,24 @@ EMSCRIPTEN_KEEPALIVE void mds_set_bios(const u8* arm9, const u8* arm7)
 
 EMSCRIPTEN_KEEPALIVE u32 mds_fault_count() { return g_faults; }
 
+EMSCRIPTEN_KEEPALIVE void mds_set_wifi(const u8* mac, const u8* settings)
+{
+    g_wifiEnabled = mac != nullptr;
+    g_haveWifiSettings = g_wifiEnabled && settings != nullptr;
+    if (g_wifiEnabled) memcpy(g_wifiMac.data(), mac, g_wifiMac.size());
+    if (g_haveWifiSettings) memcpy(g_wifiSettings.data(), settings, kWifiSettingsSize);
+    g_netRead = g_netCount = 0;
+}
+
+EMSCRIPTEN_KEEPALIVE void mds_net_receive(const u8* data, int length)
+{
+    if (!g_wifiEnabled || length < 14 || length > kNetReceiveMax || g_netCount == kNetQueueSize) return;
+    auto& frame = g_netQueue[(g_netRead + g_netCount) % kNetQueueSize];
+    memcpy(frame.bytes, data, length);
+    frame.length = length;
+    ++g_netCount;
+}
+
 // Takes ownership of `rom` (allocated with mds_alloc). `save` may be null and is copied.
 // Returns 0 on success, a negative value on failure.
 EMSCRIPTEN_KEEPALIVE int mds_load(u8* rom, u32 romlen, const u8* save, u32 savelen)
@@ -351,6 +413,23 @@ EMSCRIPTEN_KEEPALIVE int mds_load(u8* rom, u32 romlen, const u8* save, u32 savel
     args.OutputSampleRate = g_sampleRate;
     args.Interpolation = AudioInterpolation::Linear;
     {
+        if (g_wifiEnabled)
+        {
+            args.Firmware.GetHeader().MacAddr = g_wifiMac;
+            if (g_haveWifiSettings)
+                memcpy(args.Firmware.GetWifiAccessPointPosition(), g_wifiSettings.data(), kWifiSettingsSize);
+            else
+            {
+                // Each session has its own NAT. A fixed virtual address also works for
+                // DS software whose DHCP client cannot configure itself on melonAP.
+                auto& accessPoint = args.Firmware.GetAccessPoints()[0];
+                accessPoint.SSIDLength = sizeof("melonAP") - 1;
+                accessPoint.Address = {10, 64, 0, 16};
+                accessPoint.Gateway = {10, 64, 0, 1};
+                accessPoint.PrimaryDns = {10, 64, 0, 2};
+                accessPoint.SubnetMask = 24;
+            }
+        }
         auto& user = args.Firmware.GetEffectiveUserData();
         user.Settings &= ~Firmware::Language::Reserved;
         user.Settings |= static_cast<Firmware::Language>(g_language);

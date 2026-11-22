@@ -106,6 +106,14 @@ export function deleteBios() {
   return run('readwrite', (store) => store.delete('bios'), FILES);
 }
 
+export function getWifiProfile() {
+  return run('readonly', (store) => store.get('nds-wifi'), FILES);
+}
+
+export function putWifiProfile(profile) {
+  return run('readwrite', (store) => store.put({ ...profile, id: 'nds-wifi' }), FILES);
+}
+
 /** Asks the browser not to evict our data when storage runs low. Best effort. */
 export function requestPersistence() {
   if (navigator.storage && navigator.storage.persist) {

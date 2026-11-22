@@ -39,6 +39,7 @@ const state = {
   userPaused: false,
   menuPaused: false,
   hiddenPaused: false,
+  reconnecting: false,
   lidClosed: false,
   saveLen: 0,
   lastSave: null,
@@ -50,6 +51,7 @@ const state = {
 
 const audio = new AudioPlayer();
 const drive = new Drive(config.driveFolderName);
+let wifiProfile;
 
 const topCanvas = $('screen-top');
 const bottomCanvas = $('screen-bottom');
@@ -386,6 +388,7 @@ function renderHome() {
 
   $('btn-start').disabled = !state.rom || state.starting;
   $('btn-start').textContent = state.rom ? '게임 시작' : 'ROM을 먼저 올려 주세요';
+  renderWifiOption();
   renderDriveLists();
 }
 
@@ -445,6 +448,10 @@ async function renderLocalSaves() {
 // ---------------------------------------------------------------------------
 // Execution mode (this device / server)
 // ---------------------------------------------------------------------------
+function renderWifiOption() {
+  $('nds-wifi-row').hidden = !(state.mode === 'server' && state.serverInfo?.wifi && state.rom?.system.id === 'nds');
+}
+
 function setMode(mode) {
   if (mode === 'server' && !(state.serverInfo && state.serverInfo.emulation)) mode = 'local';
   state.mode = mode;
@@ -455,6 +462,7 @@ function setMode(mode) {
     $(id).setAttribute('aria-checked', String(mode === value));
   }
   $('server-password-row').hidden = !(mode === 'server' && state.serverInfo && state.serverInfo.passwordRequired);
+  renderWifiOption();
 }
 
 /** Normalises what the user typed into an origin such as https://host:port, or '' if unusable. */
@@ -679,11 +687,26 @@ function flashHud(text) {
 function renderHud() {
   const parts = [];
   const slow = state.slowSeconds >= 3;
+  if (state.reconnecting) parts.push('서버에 다시 연결 중…');
   if ((settings.showFps || slow) && hudStats) parts.push((slow ? '느림 · ' : '') + hudStats);
   $('hud').classList.toggle('slow', slow);
   if (hudFlash) parts.push(hudFlash);
   $('hud-text').textContent = parts.join(' · ');
   $('hud').style.display = parts.length ? '' : 'none';
+}
+
+async function loadWifiProfile() {
+  if (wifiProfile) return wifiProfile;
+  const saved = await storage.getWifiProfile().catch(() => null);
+  if (saved && /^[0-9a-f]{12}$/.test(saved.mac)) {
+    wifiProfile = { mac: saved.mac, settings: saved.settings };
+  } else {
+    const mac = crypto.getRandomValues(new Uint8Array(6));
+    mac[0] = (mac[0] & 0xfc) | 2;
+    wifiProfile = { mac: Array.from(mac, (byte) => byte.toString(16).padStart(2, '0')).join(''), settings: '' };
+    storage.putWifiProfile(wifiProfile).catch(() => toast('DS Wi-Fi 설정을 브라우저에 보관할 수 없습니다.', 'error'));
+  }
+  return wifiProfile;
 }
 
 async function startGame() {
@@ -693,6 +716,7 @@ async function startGame() {
   busy('준비 중…', 0);
 
   const mode = state.mode;
+  const useWifi = mode === 'server' && !$('nds-wifi-row').hidden && $('nds-wifi').checked;
   const backend = mode === 'server' ? new RemoteBackend($('server-password').value) : new LocalBackend();
   try {
     await audio.init(mode === 'server' ? 0.12 : 0.07);
@@ -705,6 +729,19 @@ async function startGame() {
     backend.onFrame = drawFrame;
     backend.onAudio = (pcm) => audio.push(pcm);
     backend.onSave = onGameSaved;
+    backend.onConnectionState = (connected) => {
+      state.reconnecting = !connected;
+      audio.flush();
+      updatePause();
+      if (connected) flashHud('서버에 다시 연결됨');
+      else renderHud();
+    };
+    backend.onWifiSettings = (settings) => {
+      if (!wifiProfile || wifiProfile.settings === settings) return;
+      wifiProfile.settings = settings;
+      storage.putWifiProfile(wifiProfile).catch(() => toast('DS Wi-Fi 설정을 브라우저에 보관할 수 없습니다.', 'error'));
+    };
+    backend.onWifiError = (text) => toast(text, 'error');
     backend.onStats = (s) => {
       hudStats =
         `${s.fps.toFixed(0)}fps` +
@@ -744,6 +781,7 @@ async function startGame() {
       language: Number(settings.language),
       datetime: [now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds()],
       streamDivider: Number(settings.streamDivider),
+      wifi: useWifi ? await loadWifiProfile() : null,
       onProgress: busy,
     });
 
@@ -768,6 +806,7 @@ async function startGame() {
 
 function enterPlayer() {
   state.playing = true;
+  state.reconnecting = false;
   state.userPaused = false;
   state.menuPaused = false;
   state.hiddenPaused = false;
@@ -792,6 +831,7 @@ function enterPlayer() {
   state.speed = 1;
   state.holdSpeed = 0;
   renderFastForward();
+  $('btn-ff').hidden = !!state.backend.wifi;
   document.body.classList.add('playing');
   applySettings();
   input.start();
@@ -805,6 +845,7 @@ async function endGame(flush) {
   if (!state.playing) return;
   const backend = state.backend;
   state.playing = false;
+  state.reconnecting = false;
   input.stop();
   clearTimeout(state.driveSyncTimer);
   if (flush && backend) {
@@ -840,13 +881,12 @@ async function endGame(flush) {
 function updatePause() {
   if (!state.playing || !state.backend) return;
   const paused = state.userPaused || state.menuPaused || state.hiddenPaused;
-  if (paused) {
-    state.backend.pause();
-    audio.suspend();
-  } else {
-    state.backend.resume();
-    audio.resume();
+  if (!state.reconnecting && !state.backend.wifi) {
+    if (paused) state.backend.pause();
+    else state.backend.resume();
   }
+  if (paused || state.reconnecting) audio.suspend();
+  else audio.resume();
   $('paused-badge').hidden = !state.userPaused || state.menuPaused;
 }
 
@@ -1361,7 +1401,7 @@ function cycleSpeed() {
 }
 /** Held key: jump to at least ×3 (or the chosen speed if higher) until released. */
 function setFastForward(on) {
-  if (!state.playing) return;
+  if (!state.playing || state.backend?.wifi) return;
   const hold = on ? Math.max(3, state.speed || 1) : 0;
   if (hold === (state.holdSpeed || 0)) return;
   state.holdSpeed = hold;
@@ -1373,7 +1413,7 @@ function openMenu() {
   if (!state.playing || $('dlg-menu').open) return;
   state.menuPaused = true;
   updatePause();
-  $('m-pause').hidden = state.userPaused;
+  $('m-pause').hidden = state.userPaused || !!state.backend?.wifi;
   $('m-fullscreen').hidden = !document.documentElement.requestFullscreen;
   $('m-fullscreen').textContent = document.fullscreenElement ? '전체 화면 끝내기' : '전체 화면';
   $('m-save-drive').disabled = !drive.linked;
@@ -1564,7 +1604,7 @@ function bindUI() {
     window.addEventListener(
       type,
       () => {
-        if (state.playing && !(state.userPaused || state.menuPaused || state.hiddenPaused)) audio.resume();
+        if (state.playing && !(state.userPaused || state.menuPaused || state.hiddenPaused || state.reconnecting)) audio.resume();
       },
       { passive: true }
     );

@@ -6,7 +6,7 @@
  * Licensed under the GNU General Public License v3 or later.
  */
 const CACHE_PREFIX = 'juhyeonds:' + self.registration.scope + ':';
-const CACHE = CACHE_PREFIX + 'v2';
+const CACHE = CACHE_PREFIX + 'v3';
 const SHELL = [
   './',
   'index.html',

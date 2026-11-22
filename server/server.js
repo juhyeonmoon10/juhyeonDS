@@ -7,6 +7,7 @@
  *                         [--tunnel]   make the server reachable from other networks
  *                         [--name NAME] [--no-announce]   listing on the site's "servers that are on" list
  *                         [--rom-cache-mb 8192]  disk space for remembered game files (0 = off)
+ *                         [--nds-wifi] [--wifi-helper /path/to/juhyeonds-wifi]
  *
  * Environment variables PORT, HOST, PASSWORD, MAX_SESSIONS, TLS_CERT, TLS_KEY work too.
  * Licensed under the GNU General Public License v3 or later.
@@ -20,6 +21,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { Worker } = require('worker_threads');
+const { startWifi, wifiProfile } = require('./wifi');
 
 let WebSocketServer = null;
 try {
@@ -53,6 +55,10 @@ const HOST = args.host || process.env.HOST || (args.public ? '0.0.0.0' : '127.0.
 const PASSWORD = String(args.password || process.env.PASSWORD || '');
 const MAX_SESSIONS = parseInt(args['max-sessions'] || process.env.MAX_SESSIONS || '4', 10);
 const EMULATION = !args['no-emulation'] && !!WebSocketServer;
+const WIFI_ENABLED = EMULATION && (!!args['nds-wifi'] || process.env.NDS_WIFI === '1');
+const WIFI_HELPER = path.resolve(typeof args['wifi-helper'] === 'string'
+  ? args['wifi-helper']
+  : process.env.NDS_WIFI_HELPER || path.join(__dirname, '..', 'tools', 'juhyeonds-wifi'));
 const TLS_CERT = args.cert || process.env.TLS_CERT || '';
 const TLS_KEY = args.key || process.env.TLS_KEY || '';
 const MAX_ROM_BYTES = 512 * 1024 * 1024;
@@ -61,6 +67,15 @@ const { RomCache, HASH_PATTERN } = require('./rom-cache');
 const ROM_CACHE_MB = args['no-rom-cache'] ? 0 : parseInt(args['rom-cache-mb'] || process.env.ROM_CACHE_MB || '8192', 10) || 0;
 const romCache = new RomCache(path.join(__dirname, '..', 'rom-cache'), ROM_CACHE_MB * 1024 * 1024);
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+
+if (WIFI_ENABLED) {
+  try {
+    fs.accessSync(WIFI_HELPER, fs.constants.X_OK);
+  } catch {
+    console.error('[DS Wi-Fi] bash server/build-wifi.sh로 브리지를 빌드하거나 --wifi-helper로 실행 파일을 지정하세요.');
+    process.exit(1);
+  }
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -137,6 +152,7 @@ function handleRequest(req, res) {
     sendJSON(res, 200, {
       name: 'juhyeonds',
       emulation: EMULATION,
+      wifi: WIFI_ENABLED,
       passwordRequired: EMULATION && PASSWORD !== '',
       sessions: sessions.size,
       maxSessions: MAX_SESSIONS,
@@ -155,10 +171,14 @@ const MSG_BIOS9 = 0x03;
 const MSG_BIOS7 = 0x04;
 const MSG_INPUT = 0x10;
 const MSG_VIDEO = 0x20;
-const HIGH_WATER = 2 * 1024 * 1024; // pause video when this much is queued for a slow client
-const LOW_WATER = 256 * 1024;
+const MSG_AUDIO = 0x21;
+const MSG_SAVE = 0x22;
+const HIGH_WATER = 512 * 1024;
+const LOW_WATER = 128 * 1024;
+const RESUME_MS = 60_000;
+const PROTOCOL = 'juhyeonds-v2';
 
-const sessions = new Set();
+const sessions = new Map();
 
 function passwordMatches(given) {
   const a = crypto.createHash('sha256').update(String(given || '')).digest();
@@ -167,14 +187,21 @@ function passwordMatches(given) {
 }
 
 class Session {
-  constructor(ws, remote) {
-    this.ws = ws;
+  constructor(ws, remote, resumable) {
+    this.token = crypto.randomBytes(32).toString('hex');
+    this.resumable = resumable;
     this.remote = remote;
     this.worker = null;
+    this.loaded = null;
+    this.wifi = null;
+    this.wifiSettings = null;
+    this.wifiError = null;
+    this.latestAutoSave = null;
+    this.expiry = null;
     this.expect = null; // { romSize, saveSize, ... } once 'start' arrives
-    this.romChunks = [];
+    this.romUpload = null;
     this.romBytes = 0;
-    this.saveChunks = [];
+    this.saveUpload = null;
     this.saveBytes = 0;
     this.bios9 = null;
     this.bios7 = null;
@@ -183,8 +210,22 @@ class Session {
     this.videoPaused = false;
     this.awaitingKeyframe = false;
     this.closed = false;
+    this.attach(ws, false);
+  }
 
+  attach(ws, reconnecting) {
+    const previous = this.ws;
+    this.ws = ws;
+    this.lastPong = Date.now();
+    clearTimeout(this.expiry);
+    if (previous) previous.terminate();
+    this.videoPaused = false;
+    this.awaitingKeyframe = reconnecting;
+    ws.on('pong', () => {
+      if (this.ws === ws) this.lastPong = Date.now();
+    });
     ws.on('message', (data, isBinary) => {
+      if (this.ws !== ws || this.closed) return;
       try {
         if (isBinary) this.onBinary(data);
         else this.onText(data.toString('utf8'));
@@ -192,22 +233,65 @@ class Session {
         this.fail(String(err.message || err));
       }
     });
-    ws.on('close', () => this.dispose());
-    ws.on('error', () => this.dispose());
+    ws.on('close', () => this.detach(ws));
+    if (this.resumable) this.send({ t: 'session', token: this.token, resumeMs: RESUME_MS });
+    if (!reconnecting) return;
+    if (this.loaded) {
+      this.send(this.loaded);
+      if (this.wifiSettings) this.send(this.wifiSettings);
+      if (this.wifiError) this.send(this.wifiError);
+      if (this.latestAutoSave) ws.send(Buffer.from(this.latestAutoSave));
+    } else if (this.launching) {
+      this.send({ t: 'loading' });
+    } else if (this.expect) {
+      this.sendUpload();
+    } else {
+      this.send({ t: 'waiting' });
+    }
+    if (this.worker) {
+      this.worker.postMessage({ t: 'input', keys: 0, touching: 0, x: 0, y: 0 });
+      this.worker.postMessage({ t: 'videoPaused', value: false });
+      this.worker.postMessage({ t: 'stream', attached: true });
+    }
   }
 
   send(obj) {
-    if (this.ws.readyState === 1) this.ws.send(JSON.stringify(obj));
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify(obj));
   }
 
-  fail(message) {
-    this.send({ t: 'error', message });
-    try {
-      this.ws.close(1011, 'error');
-    } catch (err) {
-      /* already closed */
-    }
+  fail(message, code) {
+    this.send({ t: 'error', message, code });
+    this.ws?.close(1011, 'error');
     this.dispose();
+  }
+
+  detach(ws) {
+    if (this.ws !== ws || this.closed) return;
+    this.ws = null;
+    if (!this.resumable) {
+      this.dispose();
+      return;
+    }
+    this.worker?.postMessage({ t: 'stream', attached: false });
+    this.expiry = setTimeout(() => this.dispose(), RESUME_MS);
+    this.expiry.unref();
+  }
+
+  heartbeat() {
+    if (this.ws?.readyState !== 1) return;
+    if (Date.now() - this.lastPong > 25_000) {
+      this.ws.terminate();
+      return;
+    }
+    this.ws.ping();
+    this.updateBackpressure();
+  }
+
+  sendUpload() {
+    this.send({
+      t: 'upload', haveRom: this.haveRom, romBytes: this.romBytes, saveBytes: this.saveBytes,
+      haveBios9: !!this.bios9, haveBios7: !!this.bios7,
+    });
   }
 
   onText(text) {
@@ -219,6 +303,11 @@ class Session {
         const saveSize = Number(msg.saveSize) | 0;
         if (romSize < 0x150 || romSize > MAX_ROM_BYTES) throw new Error('ROM 크기가 올바르지 않습니다');
         if (saveSize < 0 || saveSize > MAX_SAVE_BYTES) throw new Error('세이브 크기가 올바르지 않습니다');
+        const system = ['nds', 'gba', 'gb'].includes(msg.system) ? msg.system : 'nds';
+        const wifi = msg.wifi ? wifiProfile(msg.wifi) : null;
+        if (msg.wifi && (!wifi || !WIFI_ENABLED || system !== 'nds')) {
+          throw new Error('이 서버 세션에서 DS Wi-Fi를 시작할 수 없습니다.');
+        }
         this.expect = {
           romSize,
           saveSize,
@@ -227,23 +316,28 @@ class Session {
           datetime: Array.isArray(msg.datetime) ? msg.datetime.slice(0, 6).map((n) => Number(n) | 0) : null,
           fpsDivider: Math.max(1, Math.min(4, Number(msg.fpsDivider) | 0 || 1)),
           bios: !!msg.bios,
-          system: ['nds', 'gba', 'gb'].includes(msg.system) ? msg.system : 'nds',
+          system,
+          wifi,
           romHash: HASH_PATTERN.test(String(msg.romHash)) ? String(msg.romHash) : '',
         };
         // A game this server already holds does not need to be sent again.
         this.haveRom = !!this.expect.romHash && romCache.has(this.expect.romHash, romSize);
-        this.send({ t: 'upload', haveRom: this.haveRom });
+        this.sendUpload();
         break;
       }
       case 'go':
         this.launch().catch((err) => this.fail(String(err.message || err)));
+        break;
+      case 'quit':
+        this.ws?.close(1000);
+        this.dispose();
         break;
       case 'pause':
       case 'resume':
       case 'reset':
       case 'getsave':
       case 'keyframe':
-        if (this.worker) this.worker.postMessage({ t: msg.t });
+        if (this.worker) this.worker.postMessage({ t: msg.t, id: msg.id });
         break;
       case 'lid':
         if (this.worker) this.worker.postMessage({ t: 'lid', closed: !!msg.closed });
@@ -275,16 +369,21 @@ class Session {
       }
       return;
     }
-    if (!this.expect || this.worker) return;
+    if (!this.expect || this.launching) return;
     if (type === MSG_ROM_CHUNK) {
-      if (this.haveRom) return;
-      this.romBytes += buf.length - 1;
-      if (this.romBytes > this.expect.romSize) throw new Error('ROM 데이터가 예고된 크기보다 큽니다');
-      this.romChunks.push(buf.subarray(1));
+      if (this.haveRom || buf.length === 1) return;
+      const end = this.romBytes + buf.length - 1;
+      if (end > this.expect.romSize) throw new Error('ROM 데이터가 예고된 크기보다 큽니다');
+      this.romUpload ??= new Uint8Array(this.expect.romSize);
+      this.romUpload.set(buf.subarray(1), this.romBytes);
+      this.romBytes = end;
     } else if (type === MSG_SAVE_CHUNK) {
-      this.saveBytes += buf.length - 1;
-      if (this.saveBytes > this.expect.saveSize) throw new Error('세이브 데이터가 예고된 크기보다 큽니다');
-      this.saveChunks.push(buf.subarray(1));
+      if (buf.length === 1) return;
+      const end = this.saveBytes + buf.length - 1;
+      if (end > this.expect.saveSize) throw new Error('세이브 데이터가 예고된 크기보다 큽니다');
+      this.saveUpload ??= new Uint8Array(this.expect.saveSize);
+      this.saveUpload.set(buf.subarray(1), this.saveBytes);
+      this.saveBytes = end;
     } else if (type === MSG_BIOS9 && this.expect.bios && buf.length === 0x1001) {
       this.bios9 = Uint8Array.from(buf.subarray(1)).buffer;
     } else if (type === MSG_BIOS7 && this.expect.bios && buf.length === 0x4001) {
@@ -300,35 +399,44 @@ class Session {
     if (this.saveBytes !== this.expect.saveSize) throw new Error('세이브 업로드가 완료되지 않았습니다');
     if (this.expect.bios && !(this.bios9 && this.bios7)) throw new Error('BIOS 업로드가 완료되지 않았습니다');
 
-    const toArrayBuffer = (chunks, total) => {
-      const out = new Uint8Array(total);
-      let off = 0;
-      for (const c of chunks) {
-        out.set(c, off);
-        off += c.length;
-      }
-      return out.buffer;
-    };
     let rom;
     if (this.haveRom) {
-      rom = await romCache.read(this.expect.romHash);
+      try {
+        rom = await romCache.read(this.expect.romHash);
+      } catch {
+        if (this.closed) return;
+        this.haveRom = false;
+        this.launching = false;
+        this.sendUpload();
+        return;
+      }
     } else {
-      rom = toArrayBuffer(this.romChunks, this.romBytes);
+      rom = this.romUpload.buffer;
       // Remember it for next time. A copy is stored because `rom` is handed to the worker.
-      const copy = rom.slice(0);
-      romCache.store(copy).catch(() => {});
+      if (romCache.enabled) romCache.store(rom.slice(0)).catch(() => {});
     }
-    const save = this.saveBytes ? toArrayBuffer(this.saveChunks, this.saveBytes) : null;
-    this.romChunks = [];
-    this.saveChunks = [];
+    const save = this.saveUpload?.buffer || null;
+    this.romUpload = this.saveUpload = null;
     if (this.closed) return;
 
+    if (this.expect.wifi) {
+      this.wifi = startWifi(WIFI_HELPER, (packet) => {
+        this.worker?.postMessage({ t: 'net', packet }, [packet.buffer]);
+      }, (err) => {
+        this.wifiError = { t: 'wifiError', message: err.message };
+        this.send(this.wifiError);
+      });
+      await this.wifi.ready;
+      if (this.closed) return;
+    }
     this.worker = new Worker(path.join(__dirname, 'session-worker.js'));
     this.worker.on('message', (m) => this.onWorkerMessage(m));
     this.worker.on('error', (err) => this.fail('에뮬레이터 오류: ' + (err.message || err)));
     this.worker.on('exit', () => {
       this.worker = null;
+      if (!this.closed) this.fail('에뮬레이터가 종료되었습니다.');
     });
+    if (!this.ws) this.worker.postMessage({ t: 'stream', attached: false });
     this.worker.postMessage(
       {
         t: 'load',
@@ -341,29 +449,36 @@ class Session {
         fpsDivider: this.expect.fpsDivider,
         bios9: this.bios9,
         bios7: this.bios7,
+        wifi: this.expect.wifi,
       },
       save ? [rom, save] : [rom]
     );
   }
 
   onWorkerMessage(m) {
-    if (this.closed || this.ws.readyState !== 1) return;
+    if (this.closed) return;
+    if (m.t === 'net') {
+      this.wifi?.send(m.packet);
+      return;
+    }
     if (m.t === 'json') {
+      if (m.data.t === 'error') {
+        this.fail(m.data.message, m.data.code);
+        return;
+      }
+      if (m.data.t === 'loaded') this.loaded = m.data;
+      if (m.data.t === 'wifiSettings') this.wifiSettings = m.data;
       this.send(m.data);
       return;
     }
     if (m.t !== 'bin') return;
-
-    // Flow control: when the client can't keep up, stop producing video until the queue
-    // drains, then restart from a keyframe. Audio and saves are always delivered.
-    const queued = this.ws.bufferedAmount;
-    if (!this.videoPaused && queued > HIGH_WATER) {
-      this.videoPaused = true;
-      this.worker.postMessage({ t: 'videoPaused', value: true });
-    } else if (this.videoPaused && queued < LOW_WATER) {
-      this.videoPaused = false;
-      this.worker.postMessage({ t: 'videoPaused', value: false });
+    if (m.kind === MSG_SAVE && m.data.byteLength > 2 && !(new Uint8Array(m.data, 1, 1)[0] & 1)) {
+      this.latestAutoSave = m.data;
     }
+    if (this.ws?.readyState !== 1) return;
+
+    this.updateBackpressure();
+    if (m.kind === MSG_AUDIO && this.videoPaused) return;
     if (m.kind === MSG_VIDEO) {
       const isKeyframe = (new Uint8Array(m.data, 1, 1)[0] & 1) === 1;
       if (this.videoPaused || (this.awaitingKeyframe && !isKeyframe)) {
@@ -377,16 +492,29 @@ class Session {
     this.ws.send(Buffer.from(m.data), { binary: true });
   }
 
+  updateBackpressure() {
+    if (!this.worker) return;
+    const queued = this.ws.bufferedAmount;
+    if (!this.videoPaused && queued > HIGH_WATER) {
+      this.videoPaused = this.awaitingKeyframe = true;
+      this.worker.postMessage({ t: 'videoPaused', value: true });
+    } else if (this.videoPaused && queued < LOW_WATER) {
+      this.videoPaused = false;
+      this.worker.postMessage({ t: 'videoPaused', value: false });
+    }
+  }
+
   dispose() {
     if (this.closed) return;
     this.closed = true;
-    sessions.delete(this);
+    clearTimeout(this.expiry);
+    sessions.delete(this.token);
+    this.wifi?.stop();
     if (this.worker) {
       this.worker.terminate();
       this.worker = null;
     }
-    this.romChunks = [];
-    this.saveChunks = [];
+    this.romUpload = this.saveUpload = null;
     log(`세션 종료 (${this.remote}) - 현재 ${sessions.size}개`);
   }
 }
@@ -405,6 +533,10 @@ const server = useTLS
 
 if (EMULATION) {
   const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024, perMessageDeflate: false });
+  const heartbeat = setInterval(() => {
+    for (const session of sessions.values()) session.heartbeat();
+  }, 10_000);
+  heartbeat.unref();
 
   server.on('upgrade', (req, socket, head) => {
     let url;
@@ -420,9 +552,22 @@ if (EMULATION) {
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
       const remote = req.socket.remoteAddress || '?';
+      ws.on('error', () => ws.terminate());
       if (PASSWORD !== '' && !passwordMatches(url.searchParams.get('key'))) {
         ws.send(JSON.stringify({ t: 'error', code: 'auth', message: '비밀번호가 올바르지 않습니다' }));
         ws.close(1008, 'auth');
+        return;
+      }
+      const protocols = (req.headers['sec-websocket-protocol'] || '').split(',').map((item) => item.trim());
+      const resumable = protocols[0] === PROTOCOL;
+      if (resumable && protocols.length > 1) {
+        const session = sessions.get(protocols[1]);
+        if (!session) {
+          ws.send(JSON.stringify({ t: 'error', code: 'expired', message: '서버 세션이 만료되었습니다.' }));
+          ws.close(1008, 'expired');
+          return;
+        }
+        session.attach(ws, true);
         return;
       }
       if (sessions.size >= MAX_SESSIONS) {
@@ -430,8 +575,8 @@ if (EMULATION) {
         ws.close(1013, 'full');
         return;
       }
-      const session = new Session(ws, remote);
-      sessions.add(session);
+      const session = new Session(ws, remote, resumable);
+      sessions.set(session.token, session);
       log(`세션 시작 (${remote}) - 현재 ${sessions.size}개`);
     });
   });
@@ -466,6 +611,7 @@ server.listen(PORT, HOST, () => {
     console.log(`  보관 중인 게임:  ${cached.files}개 (${(cached.bytes / 1048576).toFixed(0)}MB, 한도 ${ROM_CACHE_MB}MB) - rom-cache 폴더`);
   }
   console.log(`  서버 에뮬레이션: ${EMULATION ? `켜짐 (동시 ${MAX_SESSIONS}세션${PASSWORD ? ', 비밀번호 사용' : ''})` : '꺼짐'}`);
+  if (WIFI_ENABLED) console.log('  DS Wi-Fi:        켜짐');
   console.log('  종료하려면 Ctrl+C');
   console.log('');
 

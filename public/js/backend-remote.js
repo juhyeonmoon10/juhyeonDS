@@ -13,6 +13,10 @@ const MSG_AUDIO = 0x21;
 const MSG_SAVE = 0x22;
 const CHUNK = 256 * 1024;
 const UPLOAD_WINDOW = 4 * 1024 * 1024;
+const PROTOCOL = 'juhyeonds-v2';
+const OPEN_TIMEOUT = 8000;
+const MESSAGE_TIMEOUT = 20_000;
+const START_TIMEOUT = 120_000;
 
 export function serverBaseUrl() {
   const configured = (window.MELONDS_CONFIG && window.MELONDS_CONFIG.serverUrl) || '';
@@ -145,20 +149,33 @@ export class RemoteBackend {
     this.ws = null;
     this.closedByUs = false;
     this.started = false;
+    this.connected = false;
+    this.wifi = false;
+    this.token = '';
+    this.resumeMs = 60_000;
+    this.retryDeadline = 0;
+    this.retryTimer = null;
+    this.retryDelay = 250;
+    this.freshConnections = 0;
+    this.controls = new Map();
     this.fbBytes = 0; // set once the server reports the picture size
     this.frame = null;
     this.frame32 = null;
     this.scratch = null;
     this.scratch32 = null;
     this.haveKeyframe = false;
-    this.saveWaiters = [];
+    this.saveWaiters = new Map();
+    this.saveId = 0;
+    this.latestSave = new Uint8Array(0);
+    this.latestAutoSave = new Uint8Array(0);
     this.lastInput = '';
+    this.input = null;
     this.ping = null;
     this.pingTimer = null;
-    this.pingSent = new Map();
+    this.pendingPing = null;
     this.pingId = 0;
-    this.lastStats = { fps: 0, load: 0 };
     this.onFrame = this.onAudio = this.onSave = this.onStats = this.onError = this.onStopped = this.onCrashed = () => {};
+    this.onConnectionState = this.onWifiSettings = this.onWifiError = () => {};
   }
 
   async start(opts) {
@@ -175,149 +192,234 @@ export class RemoteBackend {
 
   connect(opts, romHash) {
     const base = serverBaseUrl().replace(/^http/, 'ws');
-    const url = base + '/emu' + (this.password ? '?key=' + encodeURIComponent(this.password) : '');
-    const progress = opts.onProgress || (() => {});
-
+    this.url = base + '/emu' + (this.password ? '?key=' + encodeURIComponent(this.password) : '');
+    this.startOptions = opts;
+    this.progress = opts.onProgress || (() => {});
+    this.startMessage = {
+      t: 'start',
+      system: opts.system,
+      romSize: opts.rom.size,
+      romHash,
+      saveSize: opts.save ? opts.save.length : 0,
+      bios: !!opts.bios,
+      sampleRate: opts.sampleRate,
+      language: opts.language,
+      datetime: opts.datetime,
+      wifi: opts.wifi,
+      fpsDivider: Math.max(1, Math.min(4, Number(opts.streamDivider) || 1)),
+    };
     return new Promise((resolve, reject) => {
-      let settled = false;
-      const failStart = (message, code) => {
-        if (settled) return;
-        settled = true;
-        this.stop();
-        reject(Object.assign(new Error(message), { code: code || '' }));
-      };
-
-      progress('서버에 연결 중…', 0);
-      let ws;
-      try {
-        ws = new WebSocket(url);
-      } catch (err) {
-        reject(new Error('서버에 연결할 수 없습니다: ' + err.message));
-        return;
-      }
-      this.ws = ws;
-      ws.binaryType = 'arraybuffer';
-
-      ws.onopen = () => {
-        progress('서버에 연결됨', 0.05);
-        ws.send(
-          JSON.stringify({
-            t: 'start',
-            system: opts.system,
-            romSize: opts.rom.size,
-            romHash,
-            saveSize: opts.save ? opts.save.length : 0,
-            bios: !!opts.bios,
-            sampleRate: opts.sampleRate,
-            language: opts.language,
-            datetime: opts.datetime,
-            fpsDivider: Math.max(1, Math.min(4, Number(opts.streamDivider) || 1)),
-          })
-        );
-      };
-
-      ws.onmessage = (event) => {
-        if (typeof event.data !== 'string') {
-          this.onBinary(event.data);
-          return;
-        }
-        let m;
-        try {
-          m = JSON.parse(event.data);
-        } catch (err) {
-          return;
-        }
-        switch (m.t) {
-          case 'upload':
-            this.upload(opts, progress, !!m.haveRom).catch((err) => failStart('업로드 실패: ' + err.message));
-            break;
-          case 'loaded':
-            progress('게임 시작!', 1);
-            settled = true;
-            this.started = true;
-            this.fbBytes = m.width * m.height * m.screens * 4;
-            this.frame = new Uint8ClampedArray(this.fbBytes);
-            this.frame32 = new Uint32Array(this.frame.buffer);
-            this.scratch = new Uint8Array(this.fbBytes);
-            this.scratch32 = new Uint32Array(this.scratch.buffer);
-            this.pingTimer = setInterval(() => this.sendPing(), 2000);
-            resolve({ saveLen: m.saveLen, width: m.width, height: m.height, screens: m.screens });
-            break;
-          case 'stats':
-            this.lastStats = { fps: m.fps, load: m.load };
-            this.onStats({ fps: m.fps, load: m.load, ping: this.ping });
-            break;
-          case 'pong': {
-            const sent = this.pingSent.get(m.id);
-            this.pingSent.delete(m.id);
-            if (sent) this.ping = performance.now() - sent;
-            break;
-          }
-          case 'stopped':
-            this.onStopped(m.reason);
-            break;
-          case 'crashed':
-            this.onCrashed();
-            break;
-          case 'error':
-            if (!settled) failStart(m.message || '서버 오류', m.code);
-            else this.onError(m.message || '서버 오류');
-            break;
-        }
-      };
-
-      ws.onerror = () => {
-        if (!settled) failStart('서버에 연결할 수 없습니다.');
-      };
-      ws.onclose = () => {
-        if (this.pingTimer) clearInterval(this.pingTimer);
-        this.pingTimer = null;
-        for (const done of this.saveWaiters.splice(0)) done(new Uint8Array(0));
-        if (!settled) failStart('서버가 연결을 닫았습니다.');
-        else if (!this.closedByUs) this.onError('서버와의 연결이 끊어졌습니다.');
-      };
+      this.resolveStart = resolve;
+      this.rejectStart = reject;
+      this.progress('서버에 연결 중…', 0);
+      this.openSocket();
     });
   }
 
-  async upload(opts, progress, haveRom) {
-    const ws = this.ws;
-    const total = opts.rom.size;
-    if (haveRom) progress('서버에 이미 있는 게임 파일을 사용합니다', 0.9);
-    for (let offset = 0; !haveRom && offset < total; offset += CHUNK) {
-      if (ws.readyState !== WebSocket.OPEN) throw new Error('연결이 끊어졌습니다');
-      const part = new Uint8Array(await opts.rom.slice(offset, offset + CHUNK).arrayBuffer());
-      const msg = new Uint8Array(part.length + 1);
-      msg[0] = MSG_ROM_CHUNK;
-      msg.set(part, 1);
-      ws.send(msg);
-      progress('게임 파일을 서버로 보내는 중…', 0.05 + 0.85 * Math.min(1, (offset + part.length) / total));
-      while (ws.bufferedAmount > UPLOAD_WINDOW) {
-        await new Promise((r) => setTimeout(r, 20));
-        if (ws.readyState !== WebSocket.OPEN) throw new Error('연결이 끊어졌습니다');
-      }
+  openSocket() {
+    if (this.closedByUs) return;
+    const resuming = !!this.token;
+    if (!resuming) ++this.freshConnections;
+    let ws;
+    try {
+      ws = new WebSocket(this.url, resuming ? [PROTOCOL, this.token] : PROTOCOL);
+    } catch (err) {
+      this.fail('서버에 연결할 수 없습니다: ' + err.message);
+      return;
     }
-    if (opts.save && opts.save.length) {
-      for (let offset = 0; offset < opts.save.length; offset += CHUNK) {
-        const part = opts.save.subarray(offset, offset + CHUNK);
-        const msg = new Uint8Array(part.length + 1);
-        msg[0] = MSG_SAVE_CHUNK;
-        msg.set(part, 1);
-        ws.send(msg);
+    this.ws = ws;
+    ws.binaryType = 'arraybuffer';
+    this.openTimer = setTimeout(() => this.connectionLost(ws), OPEN_TIMEOUT);
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      clearTimeout(this.openTimer);
+      this.lastMessage = Date.now();
+      if (!resuming) {
+        this.progress('서버에 연결됨', 0.05);
+        this.sendJSON(this.startMessage);
       }
+      this.pingTimer = setInterval(() => {
+        if (!document.hidden && Date.now() - this.lastMessage > MESSAGE_TIMEOUT) this.connectionLost(ws);
+        else this.sendPing();
+      }, 2000);
+    };
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
+      this.lastMessage = Date.now();
+      if (typeof event.data !== 'string') {
+        this.onBinary(event.data);
+        return;
+      }
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      this.onMessage(ws, message);
+    };
+    ws.onclose = () => this.connectionLost(ws);
+  }
+
+  onMessage(ws, message) {
+    switch (message.t) {
+      case 'session':
+        if (/^[0-9a-f]{64}$/.test(message.token)) this.token = message.token;
+        this.resumeMs = Math.min(60_000, Math.max(1000, Number(message.resumeMs) || 60_000));
+        break;
+      case 'waiting':
+        this.sendJSON(this.startMessage);
+        break;
+      case 'loading':
+        this.progress('서버에서 게임을 시작하는 중…', 0.92);
+        this.waitForLoad();
+        break;
+      case 'upload':
+        clearTimeout(this.loadTimer);
+        this.retryDeadline = 0;
+        this.retryDelay = 250;
+        this.upload(ws, message).catch((err) => {
+          if (this.ws === ws && ws.readyState === WebSocket.OPEN) this.fail('업로드 실패: ' + err.message);
+        });
+        break;
+      case 'loaded':
+        this.loaded(message);
+        break;
+      case 'stats':
+        this.onStats({ fps: message.fps, load: message.load, ping: this.ping });
+        break;
+      case 'pong': {
+        if (this.pendingPing?.id === message.id) {
+          this.ping = performance.now() - this.pendingPing.sent;
+          this.pendingPing = null;
+        }
+        break;
+      }
+      case 'wifiSettings':
+        if ((this.wifi || this.startMessage?.wifi) && /^[A-Za-z0-9+/]{1024}$/.test(message.settings))
+          this.onWifiSettings(message.settings);
+        break;
+      case 'wifiError':
+        this.onWifiError(message.message);
+        break;
+      case 'stopped':
+        this.onStopped(message.reason);
+        break;
+      case 'crashed':
+        this.onCrashed();
+        break;
+      case 'error':
+        this.fail(message.message || '서버 오류', message.code);
+        break;
+    }
+  }
+
+  loaded(info) {
+    clearTimeout(this.loadTimer);
+    this.connected = true;
+    this.retryDeadline = 0;
+    this.retryDelay = 250;
+    this.haveKeyframe = false;
+    if (this.started) {
+      this.lastInput = '';
+      for (const control of this.controls.values()) this.sendJSON(control);
+      if (this.input) this.setInput(...this.input);
+      this.onConnectionState(true);
+      return;
+    }
+    this.started = true;
+    this.wifi = !!(info.wifi && this.startMessage.wifi);
+    this.fbBytes = info.width * info.height * info.screens * 4;
+    this.frame = new Uint8ClampedArray(this.fbBytes);
+    this.frame32 = new Uint32Array(this.frame.buffer);
+    this.scratch = new Uint8Array(this.fbBytes);
+    this.scratch32 = new Uint32Array(this.scratch.buffer);
+    this.progress('게임 시작!', 1);
+    this.startOptions = this.startMessage = null;
+    this.resolveStart({ saveLen: info.saveLen, width: info.width, height: info.height, screens: info.screens });
+  }
+
+  connectionLost(ws) {
+    if (this.ws !== ws || this.closedByUs) return;
+    const wasConnected = this.connected;
+    this.ws = null;
+    this.connected = false;
+    this.haveKeyframe = false;
+    this.ping = null;
+    this.clearSocketTimers();
+    if (ws.readyState < WebSocket.CLOSING) ws.close(4000, 'reconnect');
+    if (wasConnected) this.onConnectionState(false);
+    if (!this.token && (this.started || this.freshConnections >= 3)) {
+      this.fail('서버와의 연결이 끊어졌습니다.');
+      return;
+    }
+    if (!this.retryDeadline) this.retryDeadline = Date.now() + this.resumeMs;
+    const remaining = this.retryDeadline - Date.now();
+    if (remaining <= 0) {
+      this.fail('제한 시간 안에 서버에 다시 연결하지 못했습니다.');
+      return;
+    }
+    if (!this.started) this.progress('서버에 다시 연결하는 중…', null);
+    this.retryTimer = setTimeout(() => this.openSocket(), Math.min(remaining, this.retryDelay));
+    this.retryDelay = Math.min(4000, this.retryDelay * 2);
+  }
+
+  clearSocketTimers() {
+    clearTimeout(this.openTimer);
+    clearTimeout(this.loadTimer);
+    clearInterval(this.pingTimer);
+    this.pendingPing = null;
+    for (const done of this.saveWaiters.values()) done(this.latestSave);
+  }
+
+  fail(message, code) {
+    if (this.closedByUs) return;
+    this.stop();
+    if (this.started) this.onError(message);
+    else this.rejectStart(Object.assign(new Error(message), { code: code || '' }));
+  }
+
+  waitForLoad() {
+    clearTimeout(this.loadTimer);
+    this.loadTimer = setTimeout(() => this.fail('서버에서 게임을 시작하는 시간이 초과되었습니다.'), START_TIMEOUT);
+  }
+
+  async upload(ws, upload) {
+    const opts = this.startOptions;
+    const total = opts.rom.size;
+    const send = async (type, part) => {
+      while (ws.bufferedAmount > UPLOAD_WINDOW) {
+        if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return false;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return false;
+      const packet = new Uint8Array(part.length + 1);
+      packet[0] = type;
+      packet.set(part, 1);
+      ws.send(packet);
+      return true;
+    };
+    if (upload.haveRom) this.progress('서버에 이미 있는 게임 파일을 사용합니다', 0.9);
+    for (let offset = upload.romBytes || 0; !upload.haveRom && offset < total; offset += CHUNK) {
+      const part = new Uint8Array(await opts.rom.slice(offset, offset + CHUNK).arrayBuffer());
+      if (!await send(MSG_ROM_CHUNK, part)) return;
+      this.progress('게임 파일을 서버로 보내는 중…', 0.05 + 0.85 * Math.min(1, (offset + part.length) / total));
+    }
+    for (let offset = upload.saveBytes || 0; opts.save && offset < opts.save.length; offset += CHUNK) {
+      if (!await send(MSG_SAVE_CHUNK, opts.save.subarray(offset, offset + CHUNK))) return;
     }
     if (opts.bios) {
-      for (const [type, data] of [[MSG_BIOS9, opts.bios.arm9], [MSG_BIOS7, opts.bios.arm7]]) {
-        const msg = new Uint8Array(data.length + 1);
-        msg[0] = type;
-        msg.set(data, 1);
-        ws.send(msg);
-      }
+      if (!upload.haveBios9 && !await send(MSG_BIOS9, opts.bios.arm9)) return;
+      if (!upload.haveBios7 && !await send(MSG_BIOS7, opts.bios.arm7)) return;
     }
-    progress('서버에서 게임을 시작하는 중…', 0.92);
+    if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+    this.progress('서버에서 게임을 시작하는 중…', 0.92);
+    this.waitForLoad();
     ws.send(JSON.stringify({ t: 'go' }));
   }
 
   onBinary(buffer) {
+    if (!this.connected || buffer.byteLength < 2) return;
     const head = new Uint8Array(buffer, 0, 2);
     const type = head[0];
     const flags = head[1];
@@ -349,11 +451,20 @@ export class RemoteBackend {
       // The payload starts at byte 2, which is 16-bit aligned.
       this.onAudio(new Int16Array(buffer, 2, (buffer.byteLength - 2) >> 1));
     } else if (type === MSG_SAVE) {
-      const data = new Uint8Array(buffer.slice(2));
+      const identified = (flags & 3) === 3;
+      if (identified && buffer.byteLength < 6) return;
+      const data = new Uint8Array(buffer, identified ? 6 : 2);
       if (flags & 1) {
-        const done = this.saveWaiters.shift();
-        if (done) done(data);
+        const id = identified ? new DataView(buffer).getUint32(2) : this.saveWaiters.keys().next().value;
+        const done = this.saveWaiters.get(id);
+        if (done) {
+          if (data.length) this.latestSave = data;
+          done(data);
+        }
       } else {
+        const previous = this.latestAutoSave;
+        if (!data.length || (data.length === previous.length && data.every((byte, i) => byte === previous[i]))) return;
+        this.latestSave = this.latestAutoSave = data;
         this.onSave(data);
       }
     }
@@ -364,9 +475,9 @@ export class RemoteBackend {
   }
 
   sendPing() {
+    if (this.pendingPing && performance.now() - this.pendingPing.sent < 8000) return;
     const id = ++this.pingId;
-    this.pingSent.set(id, performance.now());
-    if (this.pingSent.size > 8) this.pingSent.clear();
+    this.pendingPing = { id, sent: performance.now() };
     this.sendJSON({ t: 'ping', id });
   }
 
@@ -376,46 +487,51 @@ export class RemoteBackend {
   }
 
   setInput(keys, touching, x, y) {
-    if (!this.started || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.input = [keys, touching, x, y];
+    if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) return;
     const key = keys + ':' + touching + ':' + x + ':' + y;
     if (key === this.lastInput) return;
     this.lastInput = key;
     this.ws.send(new Uint8Array([MSG_INPUT, keys & 0xff, (keys >> 8) & 0xff, touching ? 1 : 0, x & 0xff, y & 0xff]));
   }
 
-  pause() { this.sendJSON({ t: 'pause' }); }
-  resume() { this.sendJSON({ t: 'resume' }); }
-  reset() { this.sendJSON({ t: 'reset' }); }
-  setLid(closed) { this.sendJSON({ t: 'lid', closed }); }
-  setStreamDivider(divider) { this.sendJSON({ t: 'fps', divider }); }
-  setSpeed(value) { this.sendJSON({ t: 'speed', value }); }
+  setControl(key, message) {
+    this.controls.set(key, message);
+    if (this.connected) this.sendJSON(message);
+  }
+
+  pause() { this.setControl('pause', { t: 'pause' }); }
+  resume() { this.setControl('pause', { t: 'resume' }); }
+  reset() { if (this.connected) this.sendJSON({ t: 'reset' }); }
+  setLid(closed) { this.setControl('lid', { t: 'lid', closed }); }
+  setStreamDivider(divider) { this.setControl('fps', { t: 'fps', divider }); }
+  setSpeed(value) { this.setControl('speed', { t: 'speed', value }); }
 
   getSave() {
-    if (!this.started || !this.ws || this.ws.readyState !== WebSocket.OPEN) return Promise.resolve(new Uint8Array(0));
+    if (!this.connected || this.ws?.readyState !== WebSocket.OPEN) return Promise.resolve(this.latestSave);
     return new Promise((resolve) => {
-      this.saveWaiters.push(resolve);
-      this.sendJSON({ t: 'getsave' });
-      setTimeout(() => {
-        const i = this.saveWaiters.indexOf(resolve);
-        if (i >= 0) {
-          this.saveWaiters.splice(i, 1);
-          resolve(new Uint8Array(0));
-        }
-      }, 8000);
+      const id = this.saveId = this.saveId % 0xffffffff + 1;
+      const done = (data) => {
+        clearTimeout(timeout);
+        this.saveWaiters.delete(id);
+        resolve(data);
+      };
+      const timeout = setTimeout(() => done(this.latestSave), 8000);
+      this.saveWaiters.set(id, done);
+      this.sendJSON({ t: 'getsave', id });
     });
   }
 
   stop() {
     this.closedByUs = true;
-    if (this.pingTimer) clearInterval(this.pingTimer);
-    this.pingTimer = null;
+    this.connected = false;
+    clearTimeout(this.retryTimer);
+    this.clearSocketTimers();
     if (this.ws) {
-      try {
-        this.ws.close();
-      } catch (err) {
-        /* already closed */
-      }
+      this.sendJSON({ t: 'quit' });
+      this.ws.close(1000);
       this.ws = null;
     }
+    this.startOptions = this.startMessage = null;
   }
 }
